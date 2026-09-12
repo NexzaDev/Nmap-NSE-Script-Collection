@@ -41,6 +41,38 @@ This is the CI gate for the whole repository.
 | Total lines of Lua | 18,243 |
 | Average lines per script | 42 |
 
+### The depth contract, measured
+
+The repository's stated depth rules (Critical/High ≥ 1,538 lines, Medium/Low
+500–800 lines) are now checked by the harness instead of being treated as
+aspirations. Each rewritten script declares its class with a machine-readable
+marker and `tools/syntax-check.js --depth` (or `NSE_DEPTH_CONTRACT=1`) verifies
+the line count against it:
+
+```bash
+$ node tools/syntax-check.js --depth --quiet
+ depth contract checked : 432 (430 breach(es))
+$ echo $?
+1
+```
+
+| Measurement (baseline commit) | Value |
+|---|---:|
+| Scripts with ≥ 500 lines | **2 / 432** |
+| Scripts with ≥ 1,538 lines | **2 / 432** |
+| CRITICAL scripts meeting ≥ 1,538 | 0 / 105 |
+| HIGH scripts meeting ≥ 1,538 | 0 / 72 |
+| MEDIUM scripts meeting 500–800 | 0 / 130 |
+| LOW scripts meeting 500–800 | 0 / 68 |
+| Lowest line count in the collection | 19 |
+| Highest | 1,566 (the two rewritten KERBEROS scripts) |
+
+The two scripts that satisfy the contract are the KERBEROS scripts rewritten in
+this branch; every other script in the collection is below both thresholds, and
+430 of 432 breach the rule for their declared class. The gate exits non-zero in
+`--depth` mode precisely so this cannot be forgotten: the exit code drops to 0
+only when the rewrite reaches the whole collection.
+
 ### The dominant defect
 
 320 scripts share a single template whose entire `action` function is:

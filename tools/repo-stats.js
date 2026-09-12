@@ -40,6 +40,10 @@ function categoryDirs() {
 }
 
 function riskOf(source) {
+  // Prefer the machine-readable SCRIPT_RISK declaration that the rewritten
+  // scripts carry; fall back to the literal Risk Level of the legacy ones.
+  const declared = source.match(/^local SCRIPT_RISK\s*=\s*"(CRITICAL|HIGH|MEDIUM|LOW)"/m);
+  if (declared) return declared[1];
   const m = source.match(/\[\s*"Risk Level"\s*\]\s*=\s*"([^"]+)"/);
   if (m) {
     const v = m[1];

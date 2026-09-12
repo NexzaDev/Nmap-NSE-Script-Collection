@@ -136,6 +136,27 @@ function checkStructure(source) {
   return problems;
 }
 
+// Depth contract for this repository:
+//   CRITICAL / HIGH -> at least 1538 lines of real, organic implementation
+//   MEDIUM  / LOW   -> 500 to 800 lines
+// The class is read from the SCRIPT_RISK marker inside the file, so the rule is
+// enforced against a declaration in the code rather than a comment in a design
+// document that nobody can verify.
+function checkDepthContract(source, lines) {
+  const problems = [];
+  const risk = (source.match(/^local SCRIPT_RISK\s*=\s*"(CRITICAL|HIGH|MEDIUM|LOW)"/m) || [])[1];
+  if (!risk) {
+    problems.push("no SCRIPT_RISK declaration (CRITICAL/HIGH must reach 1538 lines, MEDIUM/LOW 500-800)");
+    return problems;
+  }
+  if (risk === "CRITICAL" || risk === "HIGH") {
+    if (lines < 1538) problems.push(`${risk} script is ${lines} lines, contract requires >= 1538`);
+  } else if (lines < 500 || lines > 800) {
+    problems.push(`${risk} script is ${lines} lines, contract requires 500-800`);
+  }
+  return problems;
+}
+
 function checkHygiene(source) {
   const problems = [];
   for (const pattern of PLACEHOLDER_PATTERNS) {
@@ -182,6 +203,9 @@ function main() {
   const results = [];
   let failures = 0;
   let nonFunctional = 0;
+  let depthViolations = 0;
+  let depthChecked = 0;
+  const enforceDepth = process.env.NSE_DEPTH_CONTRACT === "1" || process.argv.includes("--depth");
 
   for (const file of files.concat(moduleFiles)) {
     const rel = path.relative(REPO_ROOT, file);
@@ -214,6 +238,14 @@ function main() {
     }
 
     if (errors.length) failures++;
+    if (!isModule && enforceDepth) {
+      depthChecked++;
+      const depthProblems = checkDepthContract(source, source.split("\n").length - (source.endsWith("\n") ? 1 : 0));
+      if (depthProblems.length) {
+        depthViolations++;
+        warnings.push(...depthProblems);
+      }
+    }
     if (functionalErrors.length) nonFunctional++;
 
     results.push({
@@ -232,6 +264,7 @@ function main() {
     failed: failures,
     functional: results.filter((r) => r.functional).length,
     nonFunctional,
+    depthViolations,
     lines: results.reduce((acc, r) => acc + r.lines, 0),
   };
 
@@ -256,10 +289,14 @@ function main() {
   console.log(` syntax/contract errors : ${totals.failed}`);
   console.log(` network-functional     : ${totals.functional}`);
   console.log(` non-functional/faked   : ${totals.nonFunctional}`);
+  console.log(` depth contract checked : ${depthChecked} (${depthViolations} breach(es))${enforceDepth ? "" : " - enable with --depth or NSE_DEPTH_CONTRACT=1"}`);
   console.log(` total lines of Lua     : ${totals.lines}`);
   console.log("=========================================================");
 
-  process.exit(failures === 0 ? 0 : 1);
+  // Strict mode fails the gate on depth-contract breaches as well as on syntax
+  // and contract errors. It is opt-in while the rewrite is in progress; the
+  // target state is to run it unconditionally.
+  process.exit(failures === 0 && depthViolations === 0 ? 0 : 1);
 }
 
 main();

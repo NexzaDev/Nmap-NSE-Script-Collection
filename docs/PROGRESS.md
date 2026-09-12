@@ -27,6 +27,23 @@ node tools/repo-stats.js                                     # line counts per c
 | `KERBEROS/kerberos-asrep-roasting.nse` | 🔴 CRITICAL | 1,563 | `nselib/kerberos5.lua` | real AS-REQ → AS-REP/KRB-ERROR exchange; realm-leak retry; KDC error classification; PA-ETYPE-INFO2 policy extraction; lockout abort; UDP→TCP fallback on `KRB_ERR_RESPONSE_TOO_BIG`; crack-cost model; masked hashes by default; probe transcript; detection, verification and remediation guidance |
 | `KERBEROS/kerberos-user-enum.nse` | 🟠 HIGH | 1,567 | `nselib/kerberos5.lua` | authoritative KDC error-code decision table; calibrated baselines; confidence model (error code + fingerprint + RTT); pacing, jitter and lockout guard; wordlist support; privileged-name heuristics; log-footprint and lockout-semantics reporting |
 
+## Depth contract status
+
+```bash
+node tools/syntax-check.js --depth        # exit 1 while any script breaches its class
+```
+
+| Class | Contract | Meeting it now | Still to rewrite |
+|---|---|---:|---:|
+| CRITICAL | ≥ 1,538 lines | 1 (asrep-roasting) | 105 |
+| HIGH | ≥ 1,538 lines | 1 (user-enum) | 72 |
+| MEDIUM | 500–800 lines | 0 | 130 |
+| LOW | 500–800 lines | 0 | 68 |
+
+430 of the 432 scripts in the tree breach the depth rule for their class. The
+two that do not are the scripts rewritten so far; the gate is deliberately
+failing until the rest catch up, so the number cannot silently regress.
+
 ## Verification layers
 
 1. **Compile** — `tools/syntax-check.js` compiles every `*.nse` and `nselib/*.lua`

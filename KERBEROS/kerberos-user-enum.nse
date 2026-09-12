@@ -121,6 +121,10 @@ local ETYPE_OFFER_DEFAULT = krb5.ETYPE_OFFER_DEFAULT
 local KRB5_ERR = krb5.KRB5_ERR
 local SCRIPT_VERSION = krb5.VERSION
 
+-- Declared risk class, read by tools/syntax-check.js to enforce the repository
+-- depth contract: CRITICAL/HIGH >= 1538 lines, MEDIUM/LOW 500-800 lines.
+local SCRIPT_RISK = "HIGH"
+
 -- ---------------------------------------------------------------------------
 -- 1. Tuning constants
 -- ---------------------------------------------------------------------------
@@ -1126,6 +1130,7 @@ function report.build(state, cfg, realm, realm_source, context, stats, baseline)
   local counts = engine.state_counts(state)
 
   out["Script version"] = SCRIPT_VERSION
+  out["Declared risk class"] = SCRIPT_RISK
   out["Realm"] = realm or "undetermined"
   if realm_source then
     out["Realm source"] = realm_source
