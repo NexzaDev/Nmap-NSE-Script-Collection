@@ -50,9 +50,50 @@
 
 ## 📖 Project Overview
 
-A comprehensive, enterprise-grade collection of **432 custom Nmap NSE (Nmap Scripting Engine) scripts** across **27 distinct protocol categories**, specialized in **defensive security auditing**, vulnerability identification, and infrastructure posture assessment. Engineered to deliver deep, actionable insights across web services, databases, cloud metadata, IoT/SCADA protocols, identity architectures, and container ecosystems without causing denial-of-service or executing destructive payloads.
+A collection of **432 Nmap NSE (Nmap Scripting Engine) scripts** across **27 protocol categories**, specialized in **defensive security auditing**, vulnerability identification, and infrastructure posture assessment: no denial of service, no destructive payloads, no exploitation.
 
-**💻 Project Language:** Lua 100% | **Total Categories:** 27 | **Total Scripts:** 432 | **Lines of Lua:** 18,243
+**💻 Project Language:** Lua 100% | **Total Categories:** 27 | **Total Scripts:** 432
+
+---
+
+## ✅ Verification status (measured, not claimed)
+
+Everything in this section is produced by the repository's own harness — no number below is typed by hand:
+
+```bash
+node tools/syntax-check.js                # compiles every script with the real Lua 5.3 compiler
+node tools/repo-stats.js                  # per-category line counts measured from the tree
+node tools/nse-sim.js tools/tests/<x>.test.js   # runs a script against a mock protocol service
+```
+
+| Measurement | Value |
+|---|---|
+| Scripts that compile (Lua 5.3 + luaparse, both front-ends) | see `node tools/syntax-check.js` output |
+| Scripts that perform **real network I/O** | see harness output |
+| Scripts still awaiting their rewrite | see `docs/AUDIT.md` |
+
+**Rewrites completed so far** (each verified end-to-end against a mock service, not just compiled):
+
+| Category | Script | Risk | Verified behaviour |
+|---|---|---|---|
+| KERBEROS | `kerberos-asrep-roasting.nse` | 🔴 CRITICAL | real AS-REQ/AS-REP exchange, realm-leak retry, KDC error classification, lockout abort, UDP→TCP fallback, crack-cost model, 9 integration scenarios passing |
+
+The harness fails any script that reports a result without ever touching the network. The 320 original placeholder scripts that returned a constant `"AUDITED - ... executed successfully."` string are listed in `docs/AUDIT.md` and are being replaced category by category in risk order (Kerberos → LDAP → SMB → RDP → ICS-SCADA → Kubernetes → SSH → SNMP → NFS-RPC → …).
+
+### 🔧 Shared protocol engines (`nselib/`)
+
+Rich protocols are implemented once, in a reviewed library, instead of being copy-pasted into every script:
+
+| Module | Contents |
+|---|---|
+| `nselib/kerberos5.lua` | ASN.1 DER encoder/decoder (explicit and implicit tagging), KRB-ERROR/AS-REP/METHOD-DATA/ETYPE-INFO[2] codec, UDP/88 + TCP/88 transport with RFC 4120 length framing, retries and automatic UDP→TCP fallback on `KRB_ERR_RESPONSE_TOO_BIG`, KRB5 error / encryption type / PA-DATA / KDCOptions / TicketFlags registries |
+
+Install the module next to Nmap's other NSE libraries before using the scripts that require it:
+
+```bash
+cp nselib/*.lua "$(nmap --datadir)/nselib/"
+# or run nmap with --datadir pointing at a directory that contains nselib/
+```
 
 ---
 
@@ -163,8 +204,8 @@ Nmap-NSE-Script-Collection/
 ### 📊 Statistics
 - **Total Scripts:** 432 (16 scripts per category)
 - **Total Categories:** 27
-- **Total Lines of Code:** 18,243 Lua
-- **Security Checks:** 1,500+
+- **Measured Lines of Lua:** regenerate with `node tools/repo-stats.js` (the per-category table it prints is the source of truth for this document)
+- **Verification:** `node tools/syntax-check.js` (exit code 0 = every script compiles and passes the repository contract)
 - **Supported Nmap:** 7.40+
 
 ---
