@@ -25,13 +25,13 @@ node tools/coverage.js --all    # one line per script: risk, lines, required ban
 | Category | Status | Notes |
 |---|---|---|
 | KERBEROS | 🟡 in progress (13 / 16) | 6 CRITICAL/HIGH scripts at spec depth plus 7 MEDIUM/LOW in the 500-800 band; 13 suites, 95 integration scenarios, 0 failed assertions |
-| KAFKA-AMQP | 🟡 in progress (3 / 16) | 1 CRITICAL script at spec depth (`kafka-unauth-broker-access.nse`, 1,692 lines) plus two LOW scripts (`kafka-broker-fingerprint.nse` 748 lines, `kafka-controller-epoch-leak.nse` 800 lines) on top of the new `nselib/kafka.lua` wire engine; 3 suites, 23 integration scenarios, 0 failed assertions |
+| KAFKA-AMQP | 🟡 in progress (6 / 16) | 4 CRITICAL/HIGH scripts at spec depth (`kafka-unauth-broker-access.nse` 1,692, `kafka-metadata-topic-leak.nse` 1,988, `kafka-create-topic-allowed.nse` 1,579, `kafka-anonymous-consumer-group.nse` 1,572) plus two LOW scripts (`kafka-broker-fingerprint.nse` 748, `kafka-controller-epoch-leak.nse` 800) on top of the 2,995-line `nselib/kafka.lua` wire engine; 6 suites, 58 integration scenarios, 0 failed assertions |
 | LDAP, SMB, RDP, ICS-SCADA, KUBERNETES, SSH, SNMP, NFS-RPC, … | ⬜ not started | still placeholder scripts; see `docs/AUDIT.md` |
 
 ## Completed scripts
 
-`node tools/coverage.js` reports 16 scripts meeting both contracts (depth rule and
-a wired integration scenario) out of 432: 13 in KERBEROS and 3 in KAFKA-AMQP.
+`node tools/coverage.js` reports 19 scripts meeting both contracts (depth rule and
+a wired integration scenario) out of 432: 13 in KERBEROS and 6 in KAFKA-AMQP.
 
 | Script | Risk | Lines | Shared engine | Verified behaviour |
 |---|---|---:|---|---|
@@ -50,6 +50,9 @@ a wired integration scenario) out of 432: 13 in KERBEROS and 3 in KAFKA-AMQP.
 | `KERBEROS/kerberos-kpasswd-service.nse` | 🟡 MEDIUM | 800 | `nselib/kerberos5.lua` | RFC 3244 password service probe on 464 with its own two byte framing; synthetic AP-REQ for `kadmin/changepw` (AP-REP answer = HIGH finding); result-code decoding from the KRB-PRIV reply (success code before authentication = HIGH); version field negotiation (0xff80 vs 0xff81); per-transport measurement; 8 scenarios |
 | `KAFKA-AMQP/kafka-controller-epoch-leak.nse` | 🟢 LOW | 800 | `nselib/kafka.lua` | measures what an unauthenticated Metadata request exposes: controller identity and placement (broker or separate quorum), cluster id, broker inventory with racks, the full partition/replica/ISR map, leader epochs and offline replicas, with an honest "fields this broker version omits" list derived from the negotiated Metadata version; finds under-replicated partitions (MEDIUM, because the exposure is the availability inventory), offline replicas, leader concentration and a controller election observed while sampling; 7 scenarios |
 | `KAFKA-AMQP/kafka-broker-fingerprint.nse` | 🟢 LOW | 748 | `nselib/kafka.lua` (§18) | fingerprints the broker from its own advertisement: schema-generation inference from API-version markers (classic → 0.11 → the 2.4 flexible family → the KRaft-aware admin APIs), KRaft-versus-ZooKeeper evidence from DescribeCluster placement and endpoint types, broker inventory with racks and controller placement, platform markers matched against the internal topics that actually exist (Schema Registry, Connect, Strimzi, MSK, Confluent, transactions), SASL posture from the handshake plus the refusal behaviour, quota enforcement from reported throttle times, and a configuration section that prints names and sensitivity but never values; 8 scenarios |
+| `KAFKA-AMQP/kafka-metadata-topic-leak.nse` | 🔴 CRITICAL | 1,988 | `nselib/kafka.lua` | full Metadata census over a real wire exchange: null-topic listing, per-name re-query for the authorization boundary, a generated-name probe with `allow_auto_topic_creation=false` that separates an existence oracle from an authorization-first refusal, DescribeConfigs for broker and topic settings with byte/duration rendering and sensitive-value detection, and DescribeCluster; findings for the inventory (CRITICAL), internal-topic exposure with a per-topic meaning table (`__consumer_offsets` = coordinator count, `__transaction_state`, `__cluster_metadata`, `_schemas`, Connect), configuration and secret disclosure, sensitive job-process names, replica topology, topic ids, operation masks, listing-vs-ACL inconsistency, under-replication/offline/ISR-less partitions and leader concentration; 13 integration scenarios |
+| `KAFKA-AMQP/kafka-create-topic-allowed.nse` | 🟠 HIGH | 1,579 | `nselib/kafka.lua` | measures the creation permission without ever creating anything: every CreateTopics carries `validate_only=true`, the error code is interpreted as proof of the authorization check (a validation error means the ACL let the request through, because Kafka authorizes before validating), a variant matrix sweeps partitions x replication x a configuration override, a second name confirms that the grant generalises, and the probe name is checked before and after; a pre-0.11 broker is never sent a creating request (the script names an existing topic and reads TOPIC_ALREADY_EXISTS); findings for anonymous create, ACL-refused create, validation-only refusal, a topic created in spite of the flag (CRITICAL), auto-creation, weak new-topic defaults and an observed quota; 13 integration scenarios |
+| `KAFKA-AMQP/kafka-anonymous-consumer-group.nse` | 🔴 CRITICAL | 1,572 | `nselib/kafka.lua` | walks the consumer-group plane unauthenticated: ListGroups (with the v4 state filter), batched DescribeGroups, FindCoordinator and OffsetFetch with a null topic list, then ListOffsets to turn committed offsets into lag; decodes the opaque ConsumerProtocol bytes the broker hands out, so the report names the subscribed topics, the user data, the generation, the rack and the exact partitions each member owns; findings for anonymous group access, member identity disclosure, assignment disclosure, committed offsets, lag, double ownership, rebalance churn and the coordinator map; 9 integration scenarios |
 | `KAFKA-AMQP/kafka-unauth-broker-access.nse` | 🔴 CRITICAL | 1,692 | `nselib/kafka.lua` | twelve-probe access matrix over a real Kafka wire exchange (ApiVersions version negotiation, null-topic Metadata, DescribeCluster, ListGroups, DescribeGroups, FindCoordinator, OffsetFetch, ListOffsets, DescribeConfigs, a `validate_only` CreateTopics and a generated-name DeleteTopics, SaslHandshake) plus an opt-in bounded Fetch sample; anonymous-granted, ACL-denied and unanswered requests are counted separately, a run in which nothing answered is reported as UNKNOWN rather than clean, internal topics/groups/committed offsets/sensitive configuration values are quoted as evidence, and no request in the script can change state (`validate_only=true`, delete names generated per run); 8 integration scenarios |
 
 ```bash
@@ -58,13 +61,13 @@ node tools/syntax-check.js --depth        # exit 1 while any script breaches its
 
 | Class | Contract | Meeting it now | Still to rewrite |
 |---|---|---:|---:|
-| CRITICAL | ≥ 1,538 lines | 4 (asrep-roasting 1,567; cve-2020-1472-prep 1,656; kafka-unauth-broker-access 1,692; weak-encryption 1,668) | 93 |
-| HIGH | ≥ 1,538 lines | 3 (pac-validation 1,566; spn-probe 1,565; user-enum 1,571) | 67 |
+| CRITICAL | ≥ 1,538 lines | 6 (asrep-roasting 1,567; cve-2020-1472-prep 1,656; kafka-anonymous-consumer-group 1,572; kafka-metadata-topic-leak 1,988; kafka-unauth-broker-access 1,692; weak-encryption 1,668) | 91 |
+| HIGH | ≥ 1,538 lines | 4 (kafka-create-topic-allowed 1,579; pac-validation 1,566; spn-probe 1,565; user-enum 1,571) | 66 |
 | MEDIUM | 500–800 lines | 4 (fast-negotiation 730; preauth-required 786; time-skew-audit 796; kpasswd-service 800) | 120 |
 | LOW | 500–800 lines | 5 (etype-negotiation 779; kafka-broker-fingerprint 748; kafka-controller-epoch-leak 800; realm-discovery 798; tcp-udp-support 798) | 58 |
 
-416 of the 432 scripts in the tree breach the depth rule for their class. The
-sixteen that do not are the scripts rewritten so far; the gate is deliberately
+413 of the 432 scripts in the tree breach the depth rule for their class. The
+nineteen that do not are the scripts rewritten so far; the gate is deliberately
 failing until the rest catch up, so the number cannot silently regress.
 
 ## Verification layers

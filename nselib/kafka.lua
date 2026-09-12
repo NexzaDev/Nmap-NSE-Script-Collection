@@ -71,6 +71,21 @@ end
 
 M.num = num
 
+-- Kafka encodes integers, Lua stores doubles, so a field read back from the
+-- engine can carry the float subtype (120.0). A report has to print 120 and not
+-- 120.0, and it must not lose a value that genuinely is fractional, so the
+-- renderer decides per value.
+function M.fmt_num(value)
+  if value == nil then return "nil" end
+  if type(value) ~= "number" then return tostring(value) end
+  local rounded = math.floor(value)
+  if value == rounded then
+    if math.abs(rounded) >= 1e15 then return string.format("%.0f", rounded) end
+    return string.format("%d", rounded)
+  end
+  return string.format("%.3f", value)
+end
+
 function M.u32(value)
   return num(value) % 4294967296
 end
@@ -2656,7 +2671,10 @@ end
 function M.fmt_list(values, limit, empty_text)
   if not values or #values == 0 then return empty_text or "none" end
   local shown = {}
-  for index = 1, math.min(#values, limit) do shown[#shown + 1] = tostring(values[index]) end
+  for index = 1, math.min(#values, limit) do
+    local value = values[index]
+    shown[#shown + 1] = (type(value) == "number") and M.fmt_num(value) or tostring(value)
+  end
   local text = table.concat(shown, ", ")
   if #values > limit then text = text .. string.format(" (+%d more)", #values - limit) end
   return text

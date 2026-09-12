@@ -191,6 +191,41 @@ function crc32c(buf) {
  * attributes(2) ... and the checksum covers everything from the attributes
  * field (offset 9 of the batch body) to the end.
  */
+/*
+ * The ConsumerProtocol payloads that DescribeGroups returns as opaque BYTES are
+ * versioned on their own and always use the classic (non-compact) schema:
+ *   Subscription: version, topics[], user_data, [v1+] owned_partitions, [v2+] generation_id, [v3+] rack_id
+ *   Assignment:   version, assigned_partitions[], [v1+] user_data
+ */
+function encodeSubscription(spec) {
+  const w = new Writer();
+  const version = spec.version === undefined ? 1 : spec.version;
+  w.i16(version);
+  wArray(w, false, spec.topics || [], (ww, name) => ww.str(name));
+  w.bytes(spec.userData ? Buffer.from(spec.userData) : null);
+  if (version >= 1) {
+    wArray(w, false, spec.ownedPartitions || [], (ww, entry) => {
+      ww.str(entry.topic);
+      ww.array(entry.partitions || [], (w3, index) => w3.i32(index));
+    });
+  }
+  if (version >= 2) w.i32(spec.generationId === undefined ? -1 : spec.generationId);
+  if (version >= 3) w.str(spec.rackId === undefined ? null : spec.rackId);
+  return w.result();
+}
+
+function encodeAssignment(spec) {
+  const w = new Writer();
+  const version = spec.version === undefined ? 1 : spec.version;
+  w.i16(version);
+  wArray(w, false, spec.topics || [], (ww, entry) => {
+    ww.str(entry.name);
+    ww.array(entry.partitions || [], (w3, index) => w3.i32(index));
+  });
+  if (version >= 1) w.bytes(spec.userData ? Buffer.from(spec.userData) : null);
+  return w.result();
+}
+
 function buildRecordBatch(records, baseOffset) {
   const body = new Writer();
   records.forEach((record, index) => {
@@ -243,7 +278,9 @@ function createMockKafka(scenario = {}) {
   ];
   const groups = scenario.groups || [
     { group: "checkout-workers", state: "Stable", protocolType: "consumer",
-      members: [{ id: "consumer-1-abc", clientId: "checkout-app", clientHost: "/10.0.0.7" }] },
+      members: [{ id: "consumer-1-abc", clientId: "checkout-app", clientHost: "/10.0.0.7",
+        subscription: { version: 1, topics: ["orders"], userData: "nmap-mock-1" },
+        assignment: { version: 1, topics: [{ name: "orders", partitions: [0, 1] }] } }] },
   ];
   const offsets = scenario.offsets || {};
   const configs = scenario.configs || {};
@@ -261,6 +298,8 @@ function createMockKafka(scenario = {}) {
     requests: [], dropped: 0, protocolErrors: [], violations: [],
     saslAttempts: [], anonymousRequests: 0, createTopicsCalls: [], deleteTopicsCalls: [],
     scram: null, lastMechanism: null,
+    autoCreateRequests: 0, autoCreatedTopics: [], createdTopics: [],
+    topicsAtStart: topics.map((t) => t.name),
   };
 
   function versionFor(api, requested) {
@@ -310,22 +349,52 @@ function createMockKafka(scenario = {}) {
     });
     if (version >= 2) wStr(w, flex, scenario.clusterId || "nse-mock-cluster");
     if (version >= 1) w.i32(scenario.controllerId === undefined ? 1 : scenario.controllerId);
-    const selected = req.topics === null || req.topics === undefined
-      ? topics
-      : topics.filter((t) => req.topics.includes(t.name));
+    if (req.autoCreate || scenario.autoCreateIgnoringFlag) {
+      // The probe asked the broker to create what it names. The mock records the
+      // request, and only creates when the scenario opted in: every script in
+      // this collection is required to send allow_auto_topic_creation=false.
+      // autoCreateIgnoringFlag models the other failure mode: the broker that
+      // creates the topic even though the caller asked it not to.
+      if (req.autoCreate) state.autoCreateRequests += 1;
+      if (scenario.autoCreateOnMetadata || scenario.autoCreateIgnoringFlag) {
+        for (const name of req.topics || []) {
+          if (!topics.some((t) => t.name === name)) {
+            topics.push({ name, partitions: scenario.autoCreatePartitions || 1, replicas: [1], isr: [1] });
+            state.autoCreatedTopics.push(name);
+          }
+        }
+      }
+    }
+    let selected;
+    if (req.topics === null || req.topics === undefined) {
+      selected = topics;
+    } else {
+      selected = topics.filter((t) => req.topics.includes(t.name));
+      // Requesting a name the cluster does not host is a question about
+      // existence, so the answer is a per-topic error code, not silence.
+      for (const name of req.topics) {
+        if (!topics.some((t) => t.name === name)) {
+          selected.push({ name, partitions: 0, missing: true });
+        }
+      }
+    }
     wArray(w, flex, error ? [] : selected, (ww, t) => {
-      ww.i16(error || 0);
+      const namedError = (scenario.topicErrors || {})[t.name];
+      const topicError = t.topicError || namedError
+        || (t.missing ? (scenario.unknownTopicError || STATUS.UNKNOWN_TOPIC_OR_PARTITION) : 0);
+      ww.i16(error || topicError);
       wStr(ww, flex, t.name);
       if (version >= 10) ww.raw(Buffer.alloc(16, 1));
       if (version >= 1) ww.bool(!!t.internal);
-      wArray(ww, flex, Array.from({ length: t.partitions }, (_, i) => i), (w3, index) => {
+      const partitionCount = topicError ? 0 : t.partitions;
+      wArray(ww, flex, Array.from({ length: partitionCount || 0 }, (_, i) => i), (w3, index) => {
         w3.i16(0);
         w3.i32(index);
         w3.i32(t.leader === undefined ? 1 : t.leader);
-        if (version >= 7) w3.i32(0);
+        if (version >= 7) w3.i32(t.leaderEpoch === undefined ? 0 : t.leaderEpoch);
         wArray(w3, flex, t.replicas || [1], (w4, r) => w4.i32(r));
-        wArray(w3, flex, t.isr || [1], (w4, r) => w4.i32(r));
-        if (version >= 5) wArray(w3, flex, [], () => {});
+        wArray(w3, flex, t.isr || t.replicas || [1], (w4, r) => w4.i32(r));
+        if (version >= 5) wArray(w3, flex, t.offline || [], (w4, r) => w4.i32(r));
         if (flex) w3.tags();
       });
       if (version >= 8) ww.i32(error ? -2147483648 : 0x1f);
@@ -391,8 +460,16 @@ function createMockKafka(scenario = {}) {
         if (version >= 4) wStr(w3, flex, m.groupInstanceId || null);
         wStr(w3, flex, m.clientId);
         wStr(w3, flex, m.clientHost);
-        wBytes(w3, flex, Buffer.from("consumer-protocol-metadata"));
-        wBytes(w3, flex, Buffer.from("assignment"));
+        wBytes(w3, flex, m.rawMetadata !== undefined ? Buffer.from(m.rawMetadata, "hex")
+          : encodeSubscription(m.subscription || {
+          version: 1, topics: [topics[0] ? topics[0].name : "orders"], userData: "nmap-mock-1",
+        }));
+        wBytes(w3, flex, m.rawAssignment !== undefined ? Buffer.from(m.rawAssignment, "hex")
+          : encodeAssignment(m.assignment || {
+            version: 1,
+            topics: [{ name: topics[0] ? topics[0].name : "orders",
+              partitions: (g.assignmentPartitions || [0]) }],
+          }));
         if (flex) w3.tags();
       });
       if (version >= 3) ww.i32(error ? -2147483648 : 0x1f);
@@ -563,15 +640,25 @@ function createMockKafka(scenario = {}) {
       state.violations.push({ api: "CreateTopics", message: "validate_only was not set: this would create a real topic" });
     }
     const w = new Writer();
-    if (version >= 2) w.i32(0);
+    if (version >= 2) w.i32(scenario.throttleMs || 0);
     wArray(w, flex, req.topics || [], (ww, topic) => {
       let code = 0;
       let message = null;
+      const exists = topics.some((t) => t.name === topic.name);
       if (error) { code = error; message = "authorization failed"; }
       else if (scenario.allowCreateTopics === false) {
         code = STATUS.TOPIC_AUTHORIZATION_FAILED; message = "not authorized to create topics";
       } else if (scenario.createValidationError) {
         code = scenario.createValidationError; message = "invalid topic configuration";
+      } else if (exists) {
+        // Existence is checked after authorization, so this answer is only ever
+        // given to a caller the ACL let through.
+        code = STATUS.TOPIC_ALREADY_EXISTS; message = "Topic '" + topic.name + "' already exists.";
+      } else if (req.validateOnly === true && scenario.createIgnoresValidateOnly) {
+        // The failure mode the probe is looking for: a broker that creates the
+        // topic even though the request asked it not to.
+        topics.push({ name: topic.name, partitions: topic.partitions || 1, replicas: [1], isr: [1] });
+        state.createdTopics.push(topic.name);
       }
       wStr(ww, flex, topic.name);
       if (version >= 7) ww.raw(Buffer.alloc(16, 2));
@@ -741,10 +828,10 @@ function createMockKafka(scenario = {}) {
         // Topics is an array of strings, not of structs: a TAG_BUFFER only
         // exists per struct, so no tags are read after each name.
         const topics = rArray(r, flex, (rr) => rStr(rr, flex));
-        if (version >= 4) r.bool();
+        const autoCreate = version >= 4 ? r.bool() : false;
         if (version >= 8) { r.bool(); r.bool(); }
         if (flex) r.tags();
-        return { topics };
+        return { topics, autoCreate };
       }
       case API.DESCRIBE_CLUSTER:
         r.bool();
