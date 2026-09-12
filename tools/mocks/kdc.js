@@ -25,6 +25,25 @@
  *     answerUnknownPrincipals:false,// answer a name that does not exist with
  *                                   // NEEDED_PREAUTH, like a KDC that treats
  *                                   // every name alike (calibration trap)
+ *     fast: "none"|"supported"|"required"
+ *                                   // RFC 6113 negotiation: advertise
+ *                                   // PA-FX-FAST (136) + PA-FX-COOKIE (133),
+ *                                   // and ("required") withhold PA-ETYPE-INFO2
+ *                                   // from an unarmored request
+ *     fastWithoutCookie: false,     // advertise PA-FX-FAST but never send
+ *                                   // PA-FX-COOKIE (133)
+ *     fastDowngrade: false,         // answer an AS-REQ carrying PA-FX-FAST with
+ *                                   // a plain AS-REP (the downgrade the script
+ *                                   // must catch)
+ *     cookieValue: 0x11223344,      // value used inside PA-FX-COOKIE
+ *     padataPolicy: { "2": "processed", "16": "unsupported", ... }
+ *                                   // how a request carrying that padata type
+ *                                   // is answered: processed = handler refused
+ *                                   // the content (24), advertised = the type
+ *                                   // belongs in an answer (25), accepted =
+ *                                   // AS-REP (11), unsupported = error 16
+ *     maskCycle: [0x..., 0x...],    // advertise a different PA-SUPPORTED-ENCTYPES
+ *                                   // mask on each request (a pool of KDCs)
  *     errorCode: null               // force a specific KRB-ERROR for every request
  *   }
  */
@@ -277,19 +296,44 @@ function tgsRep(scenario, req, spn) {
   ));
 }
 
-function preauthRequired(scenario, account) {
+function preauthRequired(scenario, account, opts) {
+  opts = opts || {};
   const etypes = account.etypes || [18, 17, 23];
   const entries = etypes.map((etype) => ({ etype, salt: account.salt || scenario.realm }));
-  const entries_blob = entries.length
+  // RFC 6113: a KDC that requires armoring withholds the salt from a request
+  // that is not armored, so the client learns nothing until it tunnels.
+  const withholdSalt = scenario.fast === "required";
+  const entries_blob = (entries.length && !withholdSalt)
     ? [{ type: 18, value: etypeInfo2(entries) }]
     : [];
   // PA-SUPPORTED-ENCTYPES: 32-bit little-endian bitmask, bit (etype - 1).
-  const mask = scenario.supportedMask !== undefined
+  // The advertised mask has to agree with what the KDC will actually accept,
+  // so acceptsEtype wins over the account's own list when a scenario sets it.
+  const maskSource = scenario.acceptsEtype || etypes;
+  let mask = scenario.supportedMask !== undefined
     ? scenario.supportedMask
-    : etypes.reduce((acc, e) => acc | (1 << (e - 1)), 0);
+    : maskSource.reduce((acc, e) => acc | (1 << (e - 1)), 0);
+  // A pool of controllers behind one name can advertise different policies.
+  // maskCycle models exactly that, one entry per request.
+  if (Array.isArray(scenario.maskCycle) && scenario.maskCycle.length) {
+    scenario.__maskIndex += 1;
+    mask = scenario.maskCycle[scenario.__maskIndex % scenario.maskCycle.length] || mask;
+  }
   const maskBuf = Buffer.alloc(4);
   maskBuf.writeUInt32LE(mask >>> 0, 0);
-  const blob = methodData([...entries_blob, { type: 165, value: maskBuf }]);
+  const padata = [...entries_blob, { type: 165, value: maskBuf }];
+  if (scenario.fast && scenario.fast !== "none") {
+    // PA-FX-FAST (136) is the advertisement; PA-FX-COOKIE (133) is the
+    // stateless-negotiation cookie RFC 6113 section 5.4.3 expects next to it.
+    padata.push({ type: 136, value: der.sequence() });
+    if (!opts.withoutCookie && !scenario.fastWithoutCookie) {
+      const cookie = Buffer.alloc(8);
+      cookie.writeUInt32BE(0x4e4d4150, 0);
+      cookie.writeUInt32BE(scenario.cookieValue || 0x11223344, 4);
+      padata.push({ type: 133, value: cookie });
+    }
+  }
+  const blob = methodData(padata);
   return krbError(scenario, 25, "NEEDED_PREAUTH", blob);
 }
 
@@ -304,6 +348,7 @@ function utcNow(shiftMs) {
 
 function createMockKdc(scenario) {
   const state = { requests: [], asReqs: [], drops: 0, udpRequests: 0, tcpRequests: 0 };
+  scenario.__maskIndex = 0;
 
   function frame(raw, proto) {
     if (!raw || proto !== "tcp") return raw;
@@ -421,8 +466,30 @@ function createMockKdc(scenario) {
     if (account.state === "disabled") {
       return { raw: frame(krbError(scenario, 18, "CLIENT_REVOKED"), proto) };
     }
-    if (account.preauth === false) {
+    // A request that carries one of the probed padata types is answered by the
+    // policy map for that type: processed (a handler exists and refused the
+    // content), advertised (the type belongs in an answer), accepted, or
+    // unsupported (KDC_ERR_PADATA_TYPE_NOSUPP).
+    const carriedFast = (req.padataTypes || []).includes(136);
+    const multiPadata = (req.padataTypes || []).filter((t) => !(t === 136 && scenario.fast && scenario.fast !== "none"));
+    if (multiPadata.length > 0 && !(carriedFast && scenario.fastDowngrade)) {
+      const first = String(multiPadata[0]);
+      const defaults = { "2": "processed", "128": "processed", "165": "advertised", "133": "advertised" };
+      const policy = (scenario.padataPolicy || {})[first] || defaults[first] || "unsupported";
+      if (policy === "unsupported") return { raw: frame(krbError(scenario, 16, "PADATA_TYPE_NOSUPP"), proto) };
+      if (policy === "processed") return { raw: frame(krbError(scenario, 24, "PREAUTH_FAILED"), proto) };
+      if (policy === "accepted") return { raw: frame(asRep(scenario, req, account), proto) };
+      return { raw: frame(preauthRequired(scenario, account), proto) };
+    }
+    if (carriedFast && scenario.fast === "none") {
+      // A KDC without a PA-FX-FAST handler refuses the padata type outright.
+      return { raw: frame(krbError(scenario, 16, "PADATA_TYPE_NOSUPP"), proto) };
+    }
+    if (account.preauth === false || (carriedFast && scenario.fastDowngrade)) {
       return { raw: frame(asRep(scenario, req, account), proto) };
+    }
+    if (carriedFast) {
+      return { raw: frame(preauthRequired(scenario, account, { carriedFast: true }), proto) };
     }
     return { raw: frame(preauthRequired(scenario, account), proto) };
   }

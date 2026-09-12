@@ -24,12 +24,12 @@ node tools/coverage.js --all    # one line per script: risk, lines, required ban
 
 | Category | Status | Notes |
 |---|---|---|
-| KERBEROS | 🟡 in progress (11 / 16) | 5 CRITICAL/HIGH scripts at spec depth plus 6 MEDIUM/LOW in the 500-800 band; 11 suites, 80 integration scenarios, 0 failed assertions |
+| KERBEROS | 🟡 in progress (13 / 16) | 6 CRITICAL/HIGH scripts at spec depth plus 7 MEDIUM/LOW in the 500-800 band; 13 suites, 95 integration scenarios, 0 failed assertions |
 | LDAP, SMB, RDP, ICS-SCADA, KUBERNETES, SSH, SNMP, NFS-RPC, … | ⬜ not started | still placeholder scripts; see `docs/AUDIT.md` |
 
 ## Completed scripts
 
-`node tools/coverage.js` reports 11 scripts meeting both contracts (depth rule and
+`node tools/coverage.js` reports 13 scripts meeting both contracts (depth rule and
 a wired integration scenario) out of 432, all of them in KERBEROS.
 
 | Script | Risk | Lines | Shared engine | Verified behaviour |
@@ -44,6 +44,8 @@ a wired integration scenario) out of 432, all of them in KERBEROS.
 | `KERBEROS/kerberos-etype-negotiation.nse` | 🟢 LOW | 779 | `nselib/kerberos5.lua` | one AS-REQ per encryption type; accepted / refused / undecided verdicts from AS-REP, error 14 and the PA-ETYPE-INFO2 list inside error 24/25 answers; whole-catalogue preference probe; DES and RC4 findings; 7 scenarios |
 | `KERBEROS/kerberos-tcp-udp-support.nse` | 🟢 LOW | 798 | `nselib/kerberos5.lua` | UDP and TCP exchanges of the same AS-REQ; RFC 4120 7.2.2 length-prefix validation on every frame; connection reuse across a configurable number of messages; KRB_ERR_RESPONSE_TOO_BIG (52) fallback; the engine's own transport used as a second, independent observation; transport-blocked, framing-defect and disagreement findings; 6 scenarios |
 | `KERBEROS/kerberos-preauth-required.nse` | 🟡 MEDIUM | 786 | `nselib/kerberos5.lua` | one AS-REQ per account carrying no padata at all; exempt / covered / unknown / revoked classification with a calibration name that proves the KDC is not answering uniformly; PA-ETYPE-INFO2 salt extraction; lockout-aware abort; account-list file support; optional AS-REP material with masked output by default; 7 scenarios |
+| `KERBEROS/kerberos-pac-validation.nse` | 🟠 HIGH | 1,566 | `nselib/kerberos5.lua` | one AS-REQ per encryption type for the machine account plus a `krbtgt` calibration oracle; PA-SUPPORTED-ENCTYPES mask decoding and an agreement check against the per-type answers; ticket facts read from issued AS-REPs (service principal, realm, etype, key version) with an AS-REP-without-pre-auth finding; an eight-entry padata capability matrix (PKINIT, S4U, FAST, cookie, PAC request); repeat sampling that detects a pool of controllers behind one name; an explicit method-limits section and the registry switches that decide what a client cannot see; 8 scenarios |
+| `KERBEROS/kerberos-fast-negotiation.nse` | 🟡 MEDIUM | 730 | `nselib/kerberos5.lua` | RFC 6113 negotiation: a plain AS-REQ, one carrying an unarmored PA-FX-FAST container, and a control name; PA-FX-FAST/PA-FX-COOKIE advertisement from the NEEDED_PREAUTH padata; not-supported / supported / required / inconsistent verdicts including a downgrade finding; salt-withholding detection; 7 scenarios |
 | `KERBEROS/kerberos-kpasswd-service.nse` | 🟡 MEDIUM | 800 | `nselib/kerberos5.lua` | RFC 3244 password service probe on 464 with its own two byte framing; synthetic AP-REQ for `kadmin/changepw` (AP-REP answer = HIGH finding); result-code decoding from the KRB-PRIV reply (success code before authentication = HIGH); version field negotiation (0xff80 vs 0xff81); per-transport measurement; 8 scenarios |
 
 ```bash
@@ -52,13 +54,13 @@ node tools/syntax-check.js --depth        # exit 1 while any script breaches its
 
 | Class | Contract | Meeting it now | Still to rewrite |
 |---|---|---:|---:|
-| CRITICAL | ≥ 1,538 lines | 3 (asrep-roasting 1,563; cve-2020-1472-prep 1,656; weak-encryption 1,666) | 94 |
-| HIGH | ≥ 1,538 lines | 2 (spn-probe 1,565; user-enum 1,567) | 68 |
-| MEDIUM | 500–800 lines | 3 (preauth-required 786; time-skew-audit 796; kpasswd-service 800) | 121 |
+| CRITICAL | ≥ 1,538 lines | 3 (asrep-roasting 1,567; cve-2020-1472-prep 1,656; weak-encryption 1,668) | 94 |
+| HIGH | ≥ 1,538 lines | 3 (pac-validation 1,566; spn-probe 1,565; user-enum 1,571) | 67 |
+| MEDIUM | 500–800 lines | 4 (fast-negotiation 730; preauth-required 786; time-skew-audit 796; kpasswd-service 800) | 120 |
 | LOW | 500–800 lines | 3 (etype-negotiation 779; realm-discovery 798; tcp-udp-support 798) | 60 |
 
-421 of the 432 scripts in the tree breach the depth rule for their class. The
-eleven that do not are the scripts rewritten so far; the gate is deliberately
+419 of the 432 scripts in the tree breach the depth rule for their class. The
+thirteen that do not are the scripts rewritten so far; the gate is deliberately
 failing until the rest catch up, so the number cannot silently regress.
 
 ## Verification layers
