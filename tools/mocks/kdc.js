@@ -22,6 +22,9 @@
  *     tcpOnly: false,               // refuse UDP (simulates a truncated/dropped path)
  *     udpTooBig: false,             // answer UDP with KRB_ERR_RESPONSE_TOO_BIG (52)
  *     dropFirst: 0,                 // drop the first N datagrams (timeout/retry tests)
+ *     answerUnknownPrincipals:false,// answer a name that does not exist with
+ *                                   // NEEDED_PREAUTH, like a KDC that treats
+ *                                   // every name alike (calibration trap)
  *     errorCode: null               // force a specific KRB-ERROR for every request
  *   }
  */
@@ -300,7 +303,7 @@ function utcNow(shiftMs) {
 }
 
 function createMockKdc(scenario) {
-  const state = { requests: [], drops: 0, udpRequests: 0, tcpRequests: 0 };
+  const state = { requests: [], asReqs: [], drops: 0, udpRequests: 0, tcpRequests: 0 };
 
   function frame(raw, proto) {
     if (!raw || proto !== "tcp") return raw;
@@ -338,6 +341,17 @@ function createMockKdc(scenario) {
     const req = parseAsReq(payload);
     if (req.error) {
       return { error: req.error, raw: null };
+    }
+    // Every AS-REQ is recorded with its padata types, so a scenario can assert
+    // what the client actually put on the wire - a pre-authentication check is
+    // only meaningful if the request carried no padata at all.
+    if (req.msgType === 10) {
+      state.asReqs.push({
+        realm: req.realm,
+        cname: req.cname,
+        etypes: req.etypes.slice(),
+        padataTypes: req.padataTypes.slice(),
+      });
     }
     // TGS requests: the KDC resolves the service principal first and only then
     // decrypts the presented ticket, which is the behaviour these scenarios

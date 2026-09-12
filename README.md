@@ -76,7 +76,17 @@ node tools/nse-sim.js tools/tests/<x>.test.js   # runs a script against a mock p
 
 | Category | Script | Risk | Verified behaviour |
 |---|---|---|---|
-| KERBEROS | `kerberos-asrep-roasting.nse` | 🔴 CRITICAL | real AS-REQ/AS-REP exchange, realm-leak retry, KDC error classification, lockout abort, UDP→TCP fallback, crack-cost model, 9 integration scenarios passing |
+| KERBEROS | `kerberos-asrep-roasting.nse` | 🔴 CRITICAL | real AS-REQ/AS-REP exchange, realm-leak retry, KDC error classification, lockout abort, UDP→TCP fallback, crack-cost model | 9 scenarios |
+| KERBEROS | `kerberos-cve-2020-1472-prep.nse` | 🔴 CRITICAL | Kerberos characterisation plus a real SMB2 → DCE/RPC → MS-NRPC probe of the Netlogon secure channel: `NetrServerReqChallenge` + `NetrServerAuthenticate3` with an all-zero credential, `vulns.add` on acceptance, opnum 30 never marshalled, masked server credential | 14 scenarios |
+| KERBEROS | `kerberos-weak-encryption.nse` | 🔴 CRITICAL | one AS-REQ per encryption type, PA-ETYPE-INFO2 and PA-SUPPORTED-ENCTYPES decoding, offline attack cost model, policy matrix | 5 scenarios |
+| KERBEROS | `kerberos-user-enum.nse` | 🟠 HIGH | KDC error-code decision table, calibrated baselines, confidence model, pacing and lockout guard | 5 scenarios |
+| KERBEROS | `kerberos-spn-probe.nse` | 🟠 HIGH | TGS-REQ/AP-REQ construction, SPN lookup-path oracle with calibration, service class catalogue, supplied-ticket inspection | 6 scenarios |
+| KERBEROS | `kerberos-time-skew-audit.nse` | 🟡 MEDIUM | multi-sample clock measurement with RTT correction, real RFC 5905 SNTP cross-check, grading with headroom | 7 scenarios |
+| KERBEROS | `kerberos-preauth-required.nse` | 🟡 MEDIUM | AS-REQ without padata, exempt/covered/unknown/revoked classification, calibration against a name that cannot exist, lockout-aware abort | 7 scenarios |
+| KERBEROS | `kerberos-kpasswd-service.nse` | 🟡 MEDIUM | RFC 3244 probe on 464 with its own two byte framing, synthetic AP-REQ, KRB-PRIV result-code decoding, version negotiation | 8 scenarios |
+| KERBEROS | `kerberos-realm-discovery.nse` | 🟢 LOW | foreign-realm leak probe, candidate matrix, KDC_ERR_WRONG_REALM redirect handling, confidence grading | 6 scenarios |
+| KERBEROS | `kerberos-tcp-udp-support.nse` | 🟢 LOW | both transports measured, RFC 4120 length-prefix validation, connection reuse, error 52 fallback, engine transport as a second observation | 6 scenarios |
+| KERBEROS | `kerberos-etype-negotiation.nse` | 🟢 LOW | one AS-REQ per etype, accepted/refused/undecided verdicts, whole-catalogue preference probe | 7 scenarios |
 
 The harness fails any script that reports a result without ever touching the network. The 320 original placeholder scripts that returned a constant `"AUDITED - ... executed successfully."` string are listed in `docs/AUDIT.md` and are being replaced category by category in risk order (Kerberos → LDAP → SMB → RDP → ICS-SCADA → Kubernetes → SSH → SNMP → NFS-RPC → …).
 
@@ -87,6 +97,7 @@ Rich protocols are implemented once, in a reviewed library, instead of being cop
 | Module | Contents |
 |---|---|
 | `nselib/kerberos5.lua` | ASN.1 DER encoder/decoder (explicit and implicit tagging), KRB-ERROR/AS-REP/METHOD-DATA/ETYPE-INFO[2] codec, UDP/88 + TCP/88 transport with RFC 4120 length framing, retries and automatic UDP→TCP fallback on `KRB_ERR_RESPONSE_TOO_BIG`, KRB5 error / encryption type / PA-DATA / KDCOptions / TicketFlags registries |
+| `nselib/netlogon.lua` | SMB2 client (negotiate, anonymous session setup, `IPC$` tree connect, pipe create/write/read), NTLMSSP type 1/3 for a null session, DCE/RPC bind/request/fault PDUs with fragment reassembly, NDR encoder and reader with referent tracking, and the MS-NRPC catalogue: NEGOEX option bits, secure channel types, NTSTATUS classes, `NetrServerReqChallenge`, `NetrServerAuthenticate2/3` and their parsers. Marshals opnum 30 nowhere. |
 
 Install the module next to Nmap's other NSE libraries before using the scripts that require it:
 
