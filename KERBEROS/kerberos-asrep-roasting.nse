@@ -287,6 +287,22 @@ local CANDIDATE_ACCOUNTS = {
   "lab", "test-svc", "qa", "staging", "dev", "developer", "intern", "temp",
   "contractor", "vendor", "partner", "external", "remote", "teleworker",
   "nmapprobe", "krbtgt", "honey", "honeypot", "canary", "decoy",
+  "scom", "opsmgr", "dpm", "sccmadmin", "mdm", "intune", "airwatch",
+  "wsusadmin", "patch", "update", "endpoint", "edr", "siem", "soc",
+  "threat", "ir", "forensics", "pentest", "redteam", "blueteam",
+  "serviceaccount", "svc-backup", "svc-sql", "svc-iis", "svc-exchange",
+  "svc-web", "svc-app", "svc-db", "svc-mail", "svc-print", "svc-file",
+  "svc-antivirus", "svc-monitor", "svc-deploy", "svc-jenkins", "svc-vmware",
+  "admin-svc", "admin-backup", "admin-sql", "admin-print", "admin-test",
+  "krbadmin", "dnsadmin", "dhcpadmin", "wsusadmin2", "vcenteradmin",
+  "esxiadmin", "nutanixadmin", "backupexec-svc", "veeam-svc", "commvault",
+  "rubrik", "cohesity", "datadomain", "netapp", "emc", "purestorage",
+  "sophos", "mcafee", "symantec", "trend", "kaspersky", "eset", "bitdefender",
+  "solarwinds-svc", "prtg", "observium", "librenms", "checkmk", "icinga",
+  "grafana", "prometheus", "kibana", "logstash", "filebeat", "metricbeat",
+  "wazuh", "ossim", "arcsight", "qradar", "sentinel", "chronicle",
+  "gmsa-test", "msa-test", "svc-azure", "svc-aws", "svc-gcp", "awsadmin",
+  "azureadmin", "gcpadmin", "terraform-svc", "ansible-svc", "puppet-svc",
 }
 
 local function build_candidates(cfg, baseline)
@@ -854,6 +870,27 @@ kb.CVE_NOTES = {
     mitigation = "Apply the November 2021 Windows updates, restrict machine-account creation rights and monitor for renamed computer accounts.",
   },
   {
+    id = "CVE-2020-17049",
+    title = "Kerberos KDC security feature bypass (Bronze Bit): forged service tickets via S4U2self",
+    relevance = "AS-REP roastable service accounts are the natural next hop: once a service account key is recovered offline it can be used to request S4U2self tickets with forwardable flags and, on unpatched DCs, obtain a service ticket usable as any user.",
+    cvss = "7.5 (CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:H)",
+    mitigation = "Apply the November 2020 and later Windows updates (KB4598347 and successors) which enforce PAC signatures; rotate the keys of any account that was roastable.",
+  },
+  {
+    id = "CVE-2022-37967",
+    title = "Kerberos PAC signature validation bypass (Kerberos privileges elevation)",
+    relevance = "The same ticket material harvested after an AS-REP roast is what PAC forgery attempts are built from; a DC that has not enforced ticket signatures cannot distinguish a forged PAC from a legitimate one.",
+    cvss = "7.2 (CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:H)",
+    mitigation = "Install the November 2022 updates and enable the KrbtgtFullPacSignature registry setting in enforcement mode after piloting.",
+  },
+  {
+    id = "CVE-2021-33764",
+    title = "Weak Kerberos encryption type negotiation (DES/3DES/RC4 accepted)",
+    relevance = "A KDC that still negotiates retired encryption types lets an attacker downgrade an AS-REP roast to material that is orders of magnitude cheaper to attack than AES.",
+    cvss = "6.5 (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)",
+    mitigation = "Remove DES and RC4 from msDS-SupportedEncryptionTypes on every account and trust; monitor KDC event 4768 for etype 1/3/23.",
+  },
+  {
     id = "CVE-2022-37966",
     title = "Kerberos RC4-HMAC-MD5 weak cryptography enforcement bypass",
     relevance = "Reinforces the same theme: while RC4 remains negotiable, AS-REP material (and TGS material) stays cheap to attack offline.",
@@ -902,6 +939,79 @@ kb.REMEDIATION = {
       "Prefer group managed service accounts (gMSA) over user accounts for services: 240-character rotating passwords make offline attacks meaningless.",
       "For accounts that cannot use gMSA, enforce 25+ character randomly generated passwords stored in a secrets manager.",
       "Deploy a honey account with pre-authentication disabled in a monitored OU to detect AS-REP roasting attempts (event 4768 with a 0 pre-authentication type).",
+    },
+  },
+}
+
+-- Detection material. An audit finding is only actionable if the blue team can
+-- hunt for the same activity, so the queries below are emitted with the
+-- findings rather than kept in documentation nobody reads.
+kb.DETECTION = {
+  windows_events = {
+    "4768 - A Kerberos authentication ticket (TGT) was requested. Baseline the Pre-Authentication Type field: 0 means the request carried no pre-authentication, which is exactly what an AS-REP roast looks like.",
+    "4768 result code 0x6 - KDC_ERR_C_PRINCIPAL_UNKNOWN: the canonical low-noise user enumeration signal.",
+    "4768 and 4771 - cluster by Account Name and source workstation for one-to-many ratios, which indicate enumeration rather than a broken client.",
+    "4769 - TGS requests; useful for the follow-on step where a recovered service key is used.",
+  },
+  kql = {
+    "SecurityEvent | where EventID == 4768 | where PreAuthType == 0 | summarize count() by Account, IpAddress, bin(TimeGenerated, 1h) | where count_ > 5",
+    "SecurityEvent | where EventID in (4768, 4771) | where ResultCode == \"0x6\" | summarize DistinctAccounts = dcount(Account) by IpAddress, bin(TimeGenerated, 15m) | where DistinctAccounts > 10",
+    "SecurityEvent | where EventID == 4768 | where TicketEncryptionType in (\"0x1\", \"0x3\", \"0x17\", \"0x18\") | project TimeGenerated, Account, IpAddress, TicketEncryptionType",
+  },
+  sigma = {
+    "title: AS-REP roasting probe",
+    "logsource: { product: windows, service: security }",
+    "detection: { selection: { EventID: 4768, PreAuthType: 0 }, condition: selection }",
+    "level: medium",
+  },
+  false_positives = {
+    "Legacy applications and appliances that authenticate without pre-authentication produce PreAuthType 0 answers for a small, stable set of accounts - baseline those first.",
+    "A single PreAuthType 0 event for a service account after a password reset can be the account's own scheduled task, not an attack.",
+    "Probes from this script appear as such events: run it from an authorised segment and record the scan window in the change log.",
+  },
+  network_signatures = {
+    "UDP/88 datagrams of 150-200 bytes beginning with 0x6a (AS-REQ) from a host that has no domain-joined identity.",
+    "KRB-ERROR 68 (WRONG_REALM) answers for realms that do not exist in the organisation: the signature of realm discovery.",
+    "One source IP generating KDC_ERR_C_PRINCIPAL_UNKNOWN for many distinct principals in a short window.",
+  },
+}
+
+-- Severity model, documented so an operator can reproduce the rating by hand.
+kb.SCORING_MODEL = {
+  "CRITICAL: at least one principal answered an unauthenticated AS-REQ and the negotiated etype is RC4-HMAC (23), RC4-HMAC-EXP (24), DES (1/2/3/8) or 3DES (5/6/7/16), or the account name matches a privileged pattern with weight >= 3.",
+  "HIGH: at least one principal answered an unauthenticated AS-REQ with AES material, or a roasted account name matches a service-account pattern.",
+  "MEDIUM: no roast succeeded but the KDC advertises retired etypes or the probe run was inconclusive (no answer at all, or every candidate unknown).",
+  "LOW: every classified principal enforced pre-authentication and no weak etype was advertised.",
+  "The rating is deliberately pessimistic: an honest INCONCLUSIVE result is reported as MEDIUM, never as LOW.",
+}
+
+-- Independent verification recipes: an operator should be able to reproduce
+-- every finding with tools that are not this script.
+kb.VERIFICATION = {
+  {
+    finding = "AS-REP material returned for an unauthenticated request",
+    steps = {
+      "ImpPacket: GetNPUsers.py <domain>/ -usersfile users.txt -no-pass -dc-ip <kdc> -format hashcat -outputfile asrep.txt",
+      "Then: hashcat -m 18200 asrep.txt wordlist.txt        # rc4-hmac material (etype 23)",
+      "      hashcat -m 19900 asrep.txt wordlist.txt        # aes128 material (etype 17)",
+      "      hashcat -m 19800 asrep.txt wordlist.txt        # aes256 material (etype 18)",
+      "Confirm the same principal is returned by this script's --script-args kerberos.show-hashes=true run; the blob must match byte for byte.",
+    },
+  },
+  {
+    finding = "pre-authentication disabled",
+    steps = {
+      "PowerShell: Get-ADUser -Filter {DoesNotRequirePreAuth -eq $true} -Properties DoesNotRequirePreAuth",
+      "Directory Services: dsquery * -filter \"(userAccountControl:1.2.840.113556.1.4.803:=4194304)\" -attr sAMAccountName",
+      "After remediation, re-run this script: the answer must become KRB-ERROR 25 (KDC_ERR_PREAUTH_REQUIRED).",
+    },
+  },
+  {
+    finding = "RC4 or retired etypes negotiable",
+    steps = {
+      "PowerShell: Get-ADUser -Filter * -Properties msDS-SupportedEncryptionTypes | Where-Object {$_.'msDS-SupportedEncryptionTypes' -band 4}",
+      "KDC auditing: Event 4768 with Ticket Encryption Type 0x17 (rc4-hmac) or 0x1/0x3 (DES).",
+      "Realm-wide baseline: klist -e on a domain controller shows the etypes the KDC is willing to issue.",
     },
   },
 }
@@ -961,6 +1071,39 @@ function report.verdict_line(verdict)
       verdict.severity == "CRITICAL" and "FAST to crack" or "expensive to crack")
   end
   return string.format("%-18s %s", verdict.record.candidate.name, verdict.title)
+end
+
+-- Full transcript of the run. An audit tool that claims a finding must be able
+-- to show the exchange that produced it, including the probes that produced
+-- nothing at all.
+function report.transcript(state)
+  local lines = {}
+  local sent_bytes, received_bytes = 0, 0
+  for index, record in ipairs(state.results) do
+    local candidate = (record.candidate and record.candidate.name) or "?"
+    local answer
+    if record.kind == "as_rep" then
+      local enc = record.as_rep and record.as_rep.enc_part or {}
+      answer = string.format("AS-REP, enc-part etype %s (%s), kvno %s",
+        tostring(enc.etype), krb.etype_info(enc.etype).name, tostring(enc.kvno or "absent"))
+    elseif record.kind == "krb_error" then
+      answer = string.format("KRB-ERROR %s (%s)", tostring(record.krb_error.code_name),
+        tostring(record.krb_error.code))
+      if record.krb_error.e_text and #record.krb_error.e_text > 0 and #record.krb_error.e_text < 40 then
+        answer = answer .. " e-text=" .. record.krb_error.e_text
+      end
+    else
+      answer = record.error or "no answer"
+    end
+    sent_bytes = sent_bytes + (record.request_bytes or 0)
+    received_bytes = received_bytes + (record.response_bytes or 0)
+    lines[#lines + 1] = string.format("#%-2d %-22s %-52s %-4s %s attempt(s) %s",
+      index, candidate, answer, (record.transport or "-"):upper(),
+      tostring(record.attempts or 0), record.rtt_ms and (tostring(record.rtt_ms) .. " ms") or "n/a")
+  end
+  lines[#lines + 1] = string.format("total %d bytes sent in %d request(s), %d bytes received",
+    sent_bytes, #state.results, received_bytes)
+  return lines
 end
 
 function report.build(state, cfg, realm, realm_source, context)
@@ -1094,6 +1237,57 @@ function report.build(state, cfg, realm, realm_source, context)
     end
     out["Pre-authentication enforced"] = lines
   end
+
+  -- Realm posture: what the aggregate answer says about the KDC's policy.
+  local posture = {}
+  local classified = #roastable + #preauth
+  if classified > 0 then
+    posture[#posture + 1] = string.format(
+      "%d of %d classified principals enforce pre-authentication (%.0f%%)",
+      #preauth, classified, (100 * #preauth) / classified)
+  end
+  local etype_counts = {}
+  for _, verdict in ipairs(preauth) do
+    for _, etype in ipairs(analysis.unique_etypes(verdict.preauth_details or {})) do
+      etype_counts[etype] = (etype_counts[etype] or 0) + 1
+    end
+  end
+  for _, verdict in ipairs(roastable) do
+    if verdict.etype then
+      etype_counts[verdict.etype] = (etype_counts[verdict.etype] or 0) + 1
+    end
+  end
+  local etype_list = {}
+  for etype, count in pairs(etype_counts) do
+    local info = krb.etype_info(etype)
+    etype_list[#etype_list + 1] = { etype = etype, count = count, info = info }
+  end
+  table.sort(etype_list, function(a, b) return a.etype < b.etype end)
+  for _, entry in ipairs(etype_list) do
+    local tag = ""
+    if entry.info.weak or entry.info.retired then
+      tag = "  <-- retired or weak crypto, remove from the realm"
+    end
+    posture[#posture + 1] = string.format("etype %-3d %-28s seen %d time(s)%s",
+      entry.etype, entry.info.name, entry.count, tag)
+  end
+  local fast_seen, otp_seen = false, false
+  for _, verdict in ipairs(preauth) do
+    local detail = verdict.preauth_details or {}
+    if detail.fast then fast_seen = true end
+    if detail.otp then otp_seen = true end
+  end
+  if fast_seen then
+    posture[#posture + 1] = "FAST / encrypted-challenge padata is offered (armored AS-REQ supported)"
+  end
+  if otp_seen then
+    posture[#posture + 1] = "OTP pre-authentication padata is offered (multi-factor policy in force)"
+  end
+  if #posture > 0 then
+    out["Realm posture"] = posture
+  end
+
+  out["Probe transcript"] = report.transcript(state)
 
   if #unknown > 0 then
     local names = {}
@@ -1328,6 +1522,31 @@ action = function(host, port)
       end
     end
     out["Remediation"] = rem
+
+    local detection = {}
+    for _, line in ipairs(kb.DETECTION.windows_events) do
+      detection[#detection + 1] = line
+    end
+    for _, line in ipairs(kb.DETECTION.kql) do
+      detection[#detection + 1] = "KQL: " .. line
+    end
+    for _, line in ipairs(kb.DETECTION.sigma) do
+      detection[#detection + 1] = "Sigma: " .. line
+    end
+    for _, line in ipairs(kb.DETECTION.network_signatures) do
+      detection[#detection + 1] = line
+    end
+    local verification = {}
+    for _, group in ipairs(kb.VERIFICATION) do
+      verification[#verification + 1] = "Verify: " .. group.finding
+      for _, step in ipairs(group.steps) do
+        verification[#verification + 1] = "  " .. step
+      end
+    end
+    out["Independent verification"] = verification
+    out["Detection and hunting"] = detection
+    out["Known false positives"] = kb.DETECTION.false_positives
+    out["Severity model"] = kb.SCORING_MODEL
 
     out["References"] = kb.REFERENCES
 
