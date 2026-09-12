@@ -17,12 +17,23 @@ node tools/repo-stats.js                                     # line counts per c
 
 ## Status by category
 
+The coverage tracker answers "what is left, per script" without any hand
+maintained list:
+
+```bash
+node tools/coverage.js          # summary per category
+node tools/coverage.js --all    # one line per script: risk, lines, required band, gaps
+```
+
 | Category | Status | Notes |
 |---|---|---|
 | KERBEROS | 🟡 in progress (4 / 16) | `kerberos-asrep-roasting`, `kerberos-user-enum`, `kerberos-weak-encryption`, `kerberos-spn-probe` rewritten and verified; 25 integration scenarios pass |
 | LDAP, SMB, RDP, ICS-SCADA, KUBERNETES, SSH, SNMP, NFS-RPC, … | ⬜ not started | still placeholder scripts; see `docs/AUDIT.md` |
 
 ## Completed scripts
+
+`node tools/coverage.js` reports 4 scripts meeting both contracts (depth rule and
+a wired integration scenario) out of 432.
 
 | Script | Risk | Lines | Shared engine | Verified behaviour |
 |---|---|---:|---|---|
