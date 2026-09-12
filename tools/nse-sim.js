@@ -608,10 +608,17 @@ function flatten(value, prefix = "", acc = []) {
 }
 
 function runScenario(scenario) {
-  const mockPath = path.resolve(REPO_ROOT, scenario.mock);
-  delete require.cache[require.resolve(mockPath)];
-  const mockModule = require(mockPath);
-  const mock = mockModule.createMockKdc(scenario.kdc || {});
+  let mock;
+  if (typeof scenario.mockFactory === "function") {
+    // A test may compose several mock services (for example Kerberos on 88 and
+    // SNTP on 123) and dispatch on the destination port itself.
+    mock = scenario.mockFactory();
+  } else {
+    const mockPath = path.resolve(REPO_ROOT, scenario.mock);
+    delete require.cache[require.resolve(mockPath)];
+    const mockModule = require(mockPath);
+    mock = mockModule.createMockKdc(scenario.kdc || {});
+  }
   const result = runScript({
     scriptPath: path.resolve(REPO_ROOT, scenario.script),
     args: scenario.args,
@@ -620,7 +627,7 @@ function runScenario(scenario) {
     debugLevel: scenario.debugLevel || 0,
     mock,
   });
-  result.requests = mock.state.requests;
+  result.requests = (mock.state && mock.state.requests) || [];
   result.mockState = mock.state;
   return result;
 }

@@ -652,8 +652,50 @@ end
 
 local timeutil = {}
 
+-- The UTC strings are assembled from the table form of os.date rather than
+-- from a format string: the "!" prefix that selects UTC is handled differently
+-- by Lua implementations (and some engines leak it into the output), while
+-- os.date("!*t") is unambiguous. The result is validated so a broken runtime
+-- produces a clear error instead of a malformed KerberosTime on the wire.
+-- os.date() in Lua 5.3 rejects a value with no integer representation, and NTP
+-- timestamps are inherently fractional, so the value is rounded and converted
+-- before the call rather than relying on the caller to pass an integer.
+local function utc_table(seconds)
+  local value = seconds
+  if type(value) ~= "number" then
+    value = os.time()
+  end
+  local as_integer = math.tointeger(math.floor(value + 0.5))
+  if not as_integer then
+    return nil
+  end
+  local ok, tab = pcall(os.date, "!*t", as_integer)
+  if not ok or type(tab) ~= "table" or not tab.year then
+    return nil
+  end
+  return tab
+end
+
+function timeutil.iso8601_utc(seconds)
+  local tab = utc_table(seconds or os.time())
+  if not tab then
+    return nil
+  end
+  return string.format("%04d-%02d-%02dT%02d:%02d:%02dZ",
+    tab.year, tab.month, tab.day, tab.hour, tab.min, tab.sec)
+end
+
 function timeutil.os_utc(offset_seconds)
-  return os.date("!%Y%m%d%H%M%SZ", os.time() + (offset_seconds or 0))
+  local tab = utc_table(os.time() + (offset_seconds or 0))
+  if not tab then
+    return nil
+  end
+  local value = string.format("%04d%02d%02d%02d%02d%02dZ",
+    tab.year, tab.month, tab.day, tab.hour, tab.min, tab.sec)
+  if not string.match(value, "^%d%d%d%d%d%d%d%d%d%d%d%d%d%dZ$") then
+    return nil
+  end
+  return value
 end
 
 function timeutil.now_ms()
@@ -728,7 +770,7 @@ function krb.build_as_req(opts)
     der.ctx(1, krb.principal(NT.PRINCIPAL, { opts.cname })),
     der.ctx(2, der.generalstring(opts.realm)),
     der.ctx(3, krb.principal(NT.SRV_INST, opts.sname or { "krbtgt", opts.realm })),
-    der.ctx(5, der.generalizedtime(opts.till or timeutil.os_utc(0))),
+    der.ctx(5, der.generalizedtime(opts.till or timeutil.os_utc(0) or "19700101000000Z")),
     der.ctx(7, der.integer(opts.nonce)),
   }
 
@@ -1252,8 +1294,10 @@ local function tcp_read_message(sock, timeout_ms)
   local deadline = timeutil.mono_ms() + timeout_ms
   while timeutil.mono_ms() < deadline do
     if #buf >= 4 then
-      local n = string.byte(buf, 1) * 16777216 + string.byte(buf, 2) * 65536
-                + string.byte(buf, 3) * 256 + string.byte(buf, 4)
+      -- Float literals: 255 * 2^24 exceeds 2^31, so this must not rely on
+      -- integer width (RFC 4120 section 7.2.2 defines a 32-bit field).
+      local n = string.byte(buf, 1) * 16777216.0 + string.byte(buf, 2) * 65536.0
+                + string.byte(buf, 3) * 256.0 + string.byte(buf, 4)
       if n == 0 or n > 1048576 then
         return nil, string.format("implausible TCP length prefix (%d bytes)", n)
       end

@@ -208,7 +208,7 @@ function krbError(scenario, code, eText, eData) {
   const parts = [
     der.ctx(0, der.integer(5)),
     der.ctx(1, der.integer(30)),
-    der.ctx(3, der.generalizedtime(utcNow())),
+    der.ctx(3, der.generalizedtime(utcNow((scenario.timeOffsetSeconds || 0) * 1000))),
     der.ctx(4, der.integer(123456)),
     der.ctx(5, der.integer(code)),
     der.ctx(8, der.generalstring(scenario.realm || "EXAMPLE.COM")),
@@ -292,8 +292,8 @@ function preauthRequired(scenario, account) {
 // Etypes a plain Windows Server 2012-2019 KDC negotiates out of the box.
 const DEFAULT_ACCEPTED_ETYPES = [17, 18, 23];
 
-function utcNow() {
-  const d = new Date();
+function utcNow(shiftMs) {
+  const d = new Date(Date.now() + (shiftMs || 0));
   const p = (n, w = 2) => String(n).padStart(w, "0");
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}Z`;
 }
