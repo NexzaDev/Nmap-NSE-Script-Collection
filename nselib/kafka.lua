@@ -2769,7 +2769,12 @@ end
 
 function M.cluster_ops_text(mask)
   if mask == nil then return "not returned by this broker version" end
-  if mask == MINUS_ONE then return "not computed (the broker withheld the mask)" end
+  -- The reader hands back large magnitudes as positive floats, so a value above
+  -- INT32_MAX is really a negative one: normalise before interpreting it.
+  if mask >= 2147483648 then mask = mask - 4294967296 end
+  -- -1 (INT32) and -2147483648 (INT32_MIN) are the two sentinels broker
+  -- releases use for "authorized operations were not computed".
+  if mask < 0 then return "not computed (the broker withheld the mask)" end
   local names = decode_cluster_ops(mask) or {}
   if #names == 0 then return "none (no cluster operation is granted)" end
   return M.fmt_list(names, 8)
