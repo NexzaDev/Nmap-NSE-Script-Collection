@@ -1,0 +1,14 @@
+{
+  "name": "nmap-nse-collection-tools",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Static verification harness for the Nmap NSE script collection: real Lua 5.3 compilation (fengari), 5.3 grammar parsing (luaparse) and repository integrity checks.",
+  "scripts": {
+    "check": "node syntax-check.js",
+    "stats": "node repo-stats.js"
+  },
+  "dependencies": {
+    "fengari": "^0.1.4",
+    "luaparse": "^0.3.1"
+  }
+}
