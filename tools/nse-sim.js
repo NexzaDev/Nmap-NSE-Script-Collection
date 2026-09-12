@@ -651,8 +651,13 @@ function main() {
     } else {
       const flat = flatten(result.output);
       for (const [key, expected] of Object.entries(scenario.expect || {})) {
-        const hit = flat.find((entry) => entry.key === key || entry.key.startsWith(key));
-        const actual = hit ? String(hit.value) : "<missing>";
+        // A field can be an array (Findings, Evidence, Prerequisites), so the
+        // expectation is checked against every line it produced, not just the
+        // first: a report is examined as a whole.
+        const hits = flat.filter((entry) => entry.key === key
+          || entry.key.startsWith(key + "[")
+          || entry.key.startsWith(key));
+        const actual = hits.length ? hits.map((entry) => String(entry.value)).join("\n") : "<missing>";
         const ok = actual.includes(expected) || (expected === "<empty>" && actual === "<missing>");
         assertions.push({
           ok,
@@ -668,6 +673,16 @@ function main() {
           ok: result.ioCalls <= scenario.maxIo,
           message: `io calls: ${result.ioCalls} (max ${scenario.maxIo})`,
         });
+      }
+      // A scenario may inspect the mock's own state (wire level checks the
+      // script's output cannot express, for example "the server saw a null
+      // session" or "no protocol error was raised"). The hook returns a list
+      // of { ok, message } records.
+      if (typeof scenario.verify === "function") {
+        const verdicts = scenario.verify(result, result.mockState) || [];
+        for (const verdict of verdicts) {
+          assertions.push({ ok: !!verdict.ok, message: `verify: ${verdict.message}` });
+        }
       }
     }
 

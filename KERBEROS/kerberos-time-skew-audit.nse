@@ -536,7 +536,7 @@ KB.REMEDIATION = {
       "Force convergence: net stop w32time && net start w32time && w32tm /resync /rediscover",
       "Never configure external sources on member servers or ordinary domain controllers: they follow the hierarchy, or the forest ends up with competing sources.",
       "In virtual environments, let either the hypervisor or w32time own the clock, never both.",
-      "A very large offset cannot be stepped in one call: the Windows Time service refuses jumps beyond MaxPosPhaseCorrection, so correct it in stages.", 
+      "A very large offset cannot be stepped in one call: the Windows Time service refuses jumps beyond MaxPosPhaseCorrection, so correct it in stages.",
     },
   },
   {
