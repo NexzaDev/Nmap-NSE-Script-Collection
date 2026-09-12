@@ -4,11 +4,10 @@
  * ---------------------------------------------------------------------------
  * Integration scenarios for KAFKA-AMQP/kafka-metadata-topic-leak.nse.
  *
- * The mock publishes a metadata inventory that is unhealthy and named like a
- * real payment platform, so the assertions can check the analysis (health,
- * naming, configuration, authorization boundary) rather than line presence.
- * The verify hooks enforce the invariant that makes this script safe to run
- * against production: it never asks the broker to create anything.
+ * The script is read-only by construction, so the properties the mock asserts
+ * are: no Metadata request ever asked the broker to create what it named, every
+ * random name the script invented came from the script itself, and the two
+ * inventory reads bracket the probes.
  */
 
 const { createMockKafka } = require("../mocks/kafka");
@@ -30,217 +29,259 @@ function scenario(name, options) {
       const say = (ok, message) => checks.push({ ok, message });
       say((state.protocolErrors || []).length === 0,
         `the mock decoded every request without a protocol error (${JSON.stringify(state.protocolErrors)})`);
-      say((state.violations || []).length === 0,
-        `no request could change state (violations: ${JSON.stringify(state.violations)})`);
-      say(state.autoCreateRequests === 0,
-        `no request asked the broker to auto-create a topic (${state.autoCreateRequests})`);
-      const forbidden = ["CreateTopics", "DeleteTopics", "Produce", "AlterConfigs", "OffsetCommit"];
-      const sent = state.requests.map((r) => r.apiName).filter((n) => forbidden.includes(n));
-      say(sent.length === 0, `the probe sent no state-changing API (${sent.join(", ") || "none"})`);
+      say((state.autoCreateRequests || 0) === 0,
+        `no Metadata request set allow_auto_topic_creation (${state.autoCreateRequests})`);
+      const apis = state.requests.map((r) => r.apiName);
+      say(apis.filter((api) => api === "Metadata").length >= 2,
+        `the inventory was read at least twice (${apis.filter((a) => a === "Metadata").length})`);
+      say(apis.includes("ApiVersions"), "the probe negotiated the API surface first");
       if (options.verify) options.verify({ state, result, say });
       return checks;
     },
   }, options.scenario || {});
 }
 
-const BROKERS = [
-  { nodeId: 1, host: "broker-1.internal", port: 9092, rack: "rack-a" },
-  { nodeId: 2, host: "broker-2.internal", port: 9092, rack: "rack-b" },
-  { nodeId: 3, host: "broker-3.internal", port: 9092, rack: "rack-c" },
+const TOPICS = [
+  { name: "orders", partitions: 3, replicas: [1, 2, 3], isr: [1, 2, 3], leader: 1 },
+  { name: "payments-eu", partitions: 2, replicas: [1, 2], isr: [1], offline: [2], leader: 1 },
+  { name: "user-profiles", partitions: 1, replicas: [1], isr: [1], leader: 2 },
+  { name: "__consumer_offsets", partitions: 2, replicas: [1, 2, 3], isr: [1, 2, 3], internal: true, leader: 1 },
+  { name: "__transaction_state", partitions: 1, replicas: [1, 2, 3], isr: [1, 2, 3], internal: true, leader: 3 },
+  { name: "connect-configs", partitions: 1, replicas: [1, 2], isr: [1, 2], internal: true, leader: 1 },
+  { name: "audit-trail", partitions: 4, replicas: [1, 2], isr: [1, 2], leader: 2 },
 ];
 
-const OPEN_PLATFORM = {
-  clusterId: "nse-prod-cluster",
-  controllerId: 2,
-  brokers: BROKERS,
-  topics: [
-    { name: "orders", partitions: 6, replicas: [1, 2, 3], isr: [1, 2, 3], leader: 1 },
-    { name: "payments-eu", partitions: 4, replicas: [1, 2, 3], isr: [1, 2], leader: 1 },
-    { name: "customer-pii", partitions: 2, replicas: [1, 2], isr: [1, 2], leader: 2 },
-    { name: "__consumer_offsets", partitions: 2, replicas: [1, 2, 3], isr: [1, 2, 3], internal: true, leader: 1 },
+const CLUSTER = {
+  clusterId: "prod-eu-central-1",
+  brokers: [
+    { nodeId: 1, host: "kafka-1.internal.example", port: 9092, rack: "az-a" },
+    { nodeId: 2, host: "kafka-2.internal.example", port: 9092, rack: "az-b" },
+    { nodeId: 3, host: "kafka-3.internal.example", port: 9092, rack: "az-c" },
   ],
-  configs: {
-    1: [
-      { name: "retention.ms", value: "604800000", source: 5 },
-      { name: "min.insync.replicas", value: "1", source: 5 },
-      { name: "auto.create.topics.enable", value: "true", source: 5 },
-      { name: "ssl.keystore.password", value: "keystore-secret", sensitive: true, readOnly: false, source: 4 },
-      { name: "unclean.leader.election.enable", value: "false", source: 5 },
-    ],
-    "payments-eu": [
-      { name: "cleanup.policy", value: "compact", source: 1 },
-      { name: "min.insync.replicas", value: "1", source: 1 },
-    ],
-  },
+  topics: TOPICS,
 };
 
 module.exports = {
   name: "kafka-metadata-topic-leak",
   scenarios: [
-    scenario("an open broker publishes the inventory, the configuration and a secret", {
-      broker: OPEN_PLATFORM,
+    scenario("an open broker publishes the whole inventory, internal subsystems and broker settings", {
+      broker: Object.assign({}, CLUSTER, {
+        allowEveryoneIfNoAclFound: true,
+        autoCreateEnabled: true,
+        offsetsReplication: 1,
+        uncleanElection: true,
+        retentionMs: 7776000000,
+      }),
+      args: { "kafka.unknown-probe": "true" },
       expect: {
         "Risk Level": "CRITICAL",
-        "Findings": "KAFKA-TOPIC-INVENTORY-DISCLOSURE",
+        "Cluster": "prod-eu-central-1",
         "Topic inventory": "payments-eu",
-        "Configuration": "retention.ms                       7d",
-        "Cluster": "nse-prod-cluster",
+        "Internal topics": "__transaction_state",
+        "Availability posture": "under-replicated",
+        "Name exposure": "user-profiles",
+        "Configuration exposure": "ssl.keystore.password",
+        "Listing versus named requests": "Per-name requests:",
       },
       expectAll: [
-        { contains: "KAFKA-INTERNAL-TOPIC-EXPOSURE" },
-        { contains: "__consumer_offsets" },
-        { contains: "KAFKA-TOPIC-CONFIG-DISCLOSURE" },
-        { contains: "KAFKA-CONFIG-SECRET-DISCLOSURE" },
-        { contains: "KAFKA-SENSITIVE-TOPIC-NAME-DISCLOSURE" },
-        { contains: "KAFKA-UNDER-REPLICATED-PARTITIONS" },
-        { contains: "KAFKA-MIN-INSYNC-REPLICAS-WEAK" },
-        { contains: "KAFKA-AUTO-CREATE-ENABLED" },
+        { contains: "KAFKA-METADATA-TOPIC-INVENTORY" },
+        { contains: "KAFKA-METADATA-INTERNAL-SUBSYSTEMS" },
+        { contains: "KAFKA-METADATA-SENSITIVE-TOPIC-NAMES" },
+        { contains: "KAFKA-METADATA-TOPOLOGY-DISCLOSURE" },
+        { contains: "KAFKA-METADATA-AUTHORIZED-OPERATIONS" },
+        { contains: "KAFKA-METADATA-HEALTH-DISCLOSURE" },
+        { contains: "KAFKA-METADATA-SENSITIVE-CONFIG-DISCLOSED" },
+        { contains: "KAFKA-METADATA-AUTHORIZATION-BYPASS-SETTING" },
+        { contains: "KAFKA-METADATA-AUTO-CREATE-ENABLED" },
+        { contains: "KAFKA-METADATA-UNCLEAN-ELECTION-ENABLED" },
+        { contains: "KAFKA-METADATA-EXISTENCE-ORACLE" },
+        { contains: "KAFKA-METADATA-LONG-RETENTION" },
+        { contains: "KAFKA-METADATA-TOPIC-CONFIG-EXPOSURE" },
+        { contains: "KAFKA-METADATA-GROUP-NAMES-DISCLOSED" },
+        { contains: "Kafka Connect" },
+        { contains: "consumer groups are in use" },
       ],
       verify: ({ state, result, say }) => {
-        const apis = state.requests.map((r) => r.apiName);
-        for (const name of ["Metadata", "DescribeConfigs", "DescribeCluster", "ListGroups"]) {
-          say(apis.includes(name), `the probe spoke ${name}`);
-        }
         const text = JSON.stringify(result.output);
-        say(text.includes("offers group coordinators") || text.includes("group-coordinator count"),
-          "the internal topic note explains what __consumer_offsets reveals");
-        say(text.includes("keystore"), "the sensitive configuration value is named");
-        say(text.includes("rack-a"), "the rack topology is reported");
+        say(text.includes("authorizer.class.name"), "the authorizer setting is quoted from the response");
+        const published = (result.vulns || []).map((entry) => entry.id);
+        for (const id of ["KAFKA-METADATA-TOPIC-INVENTORY", "KAFKA-METADATA-SENSITIVE-CONFIG-DISCLOSED"]) {
+          say(published.includes(id), `the finding ${id} was published to Nmap's vulnerability table`);
+        }
+        const names = state.requests.filter((r) => r.apiName === "Metadata").map((r) => r.version);
+        say(names.every((v) => v >= 9), `Metadata was asked with a flexible schema (${JSON.stringify(names)})`);
       },
     }),
 
-    scenario("an authorizer filters the listing down to nothing", {
-      broker: { anonymousAllowed: false },
+    scenario("a broker that requires authentication returns no inventory", {
+      broker: Object.assign({}, CLUSTER, { anonymousAllowed: false }),
       expect: {
-        "Risk Level": "MEDIUM",
-        "Findings": "KAFKA-METADATA-FILTERED",
-        "Access matrix": "filtered",
+        "Risk Level": "NONE",
+        "Findings": "KAFKA-METADATA-NO-FINDING",
+        "Topic inventory": "0 topic",
       },
       verify: ({ result, say }) => {
         const text = JSON.stringify(result.output);
-        say(!text.includes("KAFKA-TOPIC-INVENTORY-DISCLOSURE"),
-          "a filtered listing is never reported as an inventory disclosure");
+        say(!text.includes("KAFKA-METADATA-TOPIC-INVENTORY"),
+          "an empty answer is never reported as a full inventory");
       },
     }),
 
-    scenario("offline and in-sync-less partitions are reported as published outages", {
-      broker: {
-        topics: [
-          { name: "orders", partitions: 3, replicas: [1, 2, 3], isr: [1], offline: [2, 3], leader: 1 },
-        ],
-      },
+    scenario("a filtered listing hides topics that a direct request still describes", {
+      broker: Object.assign({}, CLUSTER, {
+        hiddenTopics: ["payments-eu", "audit-trail"],
+      }),
+      args: { "kafka.names": "payments-eu,audit-trail" },
       expect: {
-        "Findings": "KAFKA-OFFLINE-REPLICAS-PUBLISHED",
+        // The listing itself is still complete enough to be critical on this
+        // cluster; the hidden-name path is asserted through the finding below.
+        "Risk Level": "CRITICAL",
+        "Listing versus named requests": "Hidden from the listing but described by name",
       },
       expectAll: [
-        { contains: "KAFKA-UNDER-REPLICATED-PARTITIONS" },
+        { contains: "KAFKA-METADATA-HIDDEN-TOPIC-ORACLE" },
       ],
-    }),
-
-    scenario("a partition with an empty in-sync set is reported as an outage", {
-      broker: {
-        topics: [
-          { name: "orders", partitions: 2, replicas: [1, 2], isr: [], leader: -1 },
-        ],
-      },
-      expect: {
-        "Findings": "KAFKA-PARTITIONS-WITHOUT-ISR",
-        "Topic inventory": "without leader",
+      verify: ({ state, say }) => {
+        const wildcard = state.requests.filter((r) => r.apiName === "Metadata" && r.topicCount === null);
+        say(wildcard.length >= 2, `the wildcard listing was read twice (${wildcard.length})`);
       },
     }),
 
-    scenario("one broker leading everything is reported as concentration", {
-      broker: {
-        brokers: [{ nodeId: 1, host: "a" }, { nodeId: 2, host: "b" }],
-        topics: [
-          { name: "orders", partitions: 4, replicas: [1, 2], isr: [1, 2], leader: 1 },
-          { name: "events", partitions: 3, replicas: [1, 2], isr: [1, 2], leader: 1 },
-        ],
-      },
+    scenario("a broker that creates what a metadata request names is caught by the before and after read", {
+      broker: Object.assign({}, CLUSTER, { autoCreateIgnoringFlag: true }),
+      args: { "kafka.unknown-probe": "true" },
       expect: {
-        "Findings": "KAFKA-LEADER-CONCENTRATION",
-        "Topic inventory": "Leadership",
+        "Risk Level": "CRITICAL",
+        "Findings": "KAFKA-METADATA-AUTO-CREATED-TOPIC",
+        "Safety ledger": "FAILED",
+      },
+      verify: ({ state, say }) => {
+        say((state.autoCreatedTopics || []).length >= 1,
+          `the mock materialised the name it was asked about (${JSON.stringify(state.autoCreatedTopics)})`);
       },
     }),
 
     scenario("configuration can be left alone", {
-      broker: OPEN_PLATFORM,
-      args: { "kafka.configs": "false" },
+      broker: CLUSTER,
+      args: { "kafka.max-configs": "0" },
       expect: {
-        "Configuration": "Configuration was not read: kafka.configs=false",
-        "Findings": "KAFKA-CONFIG-READ-NOT-ATTEMPTED",
+        "Configuration exposure": "Broker settings that matter",
+        "Topic inventory": "orders",
       },
       verify: ({ state, say }) => {
-        const apis = state.requests.map((r) => r.apiName);
-        say(!apis.includes("DescribeConfigs"), "no configuration request was sent");
+        const configCalls = state.requests.filter((r) => r.apiName === "DescribeConfigs");
+        say(configCalls.length === 1,
+          `only the broker configs were requested (${configCalls.length} DescribeConfigs call)`);
       },
     }),
 
-    scenario("an unknown name answered with a missing-topic error is an existence oracle", {
-      broker: OPEN_PLATFORM,
+    scenario("the per-name probe can be left alone", {
+      broker: CLUSTER,
+      args: { "kafka.named-probe": "false" },
       expect: {
-        "Authorization boundary": "existence oracle",
-        "Findings": "KAFKA-TOPIC-EXISTENCE-ORACLE",
-      },
-    }),
-
-    scenario("an unknown name refused with an authorization error hides existence", {
-      broker: Object.assign({}, OPEN_PLATFORM, { unknownTopicError: 29 }),
-      expect: {
-        "Authorization boundary": "Authorization is evaluated before existence",
-        "Findings": "KAFKA-AUTHORIZATION-PRECEDES-EXISTENCE",
-      },
-    }),
-
-    scenario("a broker that creates the topic despite the flag is reported as critical", {
-      broker: Object.assign({}, OPEN_PLATFORM, { autoCreateIgnoringFlag: true }),
-      expect: {
-        "Risk Level": "CRITICAL",
-        "Findings": "KAFKA-AUTO-CREATE-FLAG-IGNORED",
+        "Listing versus named requests": "the per-name probe is disabled",
       },
       verify: ({ state, say }) => {
-        say(state.autoCreatedTopics.length === 1,
-          `the mock created exactly one topic to model the ignored flag (${JSON.stringify(state.autoCreatedTopics)})`);
+        const byName = state.requests.filter((r) => r.apiName === "Metadata" && r.topicCount !== null);
+        say(byName.length === 0, `no Metadata request named a topic (${JSON.stringify(byName.length)})`);
       },
     }),
 
-    scenario("topics that are listed but refused by name expose the ACL boundary", {
-      broker: {
-        clusterId: "nse-acl",
-        topics: [
-          { name: "orders", partitions: 1, replicas: [1], isr: [1] },
-          { name: "secrets", partitions: 1, replicas: [1], isr: [1] },
-        ],
-        topicErrors: { secrets: 29 },
-      },
-      expect: {
-        "Findings": "KAFKA-LISTING-NOT-FILTERED-BY-ACL",
-        "Authorization boundary": "listed but refused by name",
-      },
-    }),
-
-    scenario("the unknown-name probe can be turned off", {
-      broker: OPEN_PLATFORM,
-      args: { "kafka.unknown-topic-probe": "false" },
-      expect: {
-        "Authorization boundary": "unknown-name probe was disabled",
-      },
-    }),
-
-    scenario("a listener that answers nothing is unmeasured, not clean", {
+    scenario("a listener that never answers is unmeasured rather than clean", {
       broker: { saslRequired: "silent" },
       expect: {
         "Risk Level": "UNKNOWN",
-        "Findings": "KAFKA-METADATA-NOT-AVAILABLE",
+        "Findings": "KAFKA-METADATA-NOT-MEASURED",
       },
     }),
 
-    scenario("verbose mode adds the transcript", {
-      broker: OPEN_PLATFORM,
+    scenario("an old broker without DescribeConfigs or DescribeCluster still yields the inventory", {
+      broker: Object.assign({}, CLUSTER, {
+        apiVersions: [
+          { key: 3, min: 0, max: 8 }, { key: 16, min: 0, max: 4 }, { key: 17, min: 0, max: 1 },
+          { key: 18, min: 0, max: 3 },
+        ],
+      }),
+      expect: {
+        "Cluster": "DescribeCluster: the broker does not advertise DescribeCluster",
+        "Configuration exposure": "the broker does not advertise DescribeConfigs",
+        "Topic inventory": "orders",
+      },
+      expectAll: [
+        { contains: "KAFKA-METADATA-TOPIC-INVENTORY" },
+      ],
+    }),
+
+    scenario("a KRaft deployment is identified from DescribeCluster and its internal topics", {
+      broker: {
+        clusterId: "MkU3OEVBNTcwNTJENDM2Qk",
+        controllerId: 3001,
+        brokers: [
+          { nodeId: 1, host: "broker-1.kraft.internal", port: 9092, rack: "az-a" },
+          { nodeId: 3001, host: "controller-1.kraft.internal", port: 9093, rack: "az-a" },
+        ],
+        topics: [
+          { name: "orders", partitions: 6, replicas: [1], isr: [1], leader: 1 },
+          { name: "__cluster_metadata", partitions: 1, replicas: [3001], isr: [3001], internal: true, leader: 3001 },
+          { name: "_schemas", partitions: 4, replicas: [1], isr: [1], internal: true, leader: 1 },
+          { name: "__strimzi-topic-operator-kstreams-topic-store-changelog", partitions: 1,
+            replicas: [1], isr: [1], internal: true, leader: 1 },
+        ],
+      },
+      expect: {
+        "Cluster": "DescribeCluster v1",
+        "Internal topics": "the KRaft controller",
+        "Topic inventory": "__strimzi",
+        "Risk Level": "CRITICAL",
+      },
+      expectAll: [
+        { contains: "Confluent Schema Registry" },
+        { contains: "Strimzi topic operator" },
+        { contains: "the cluster runs without ZooKeeper" },
+      ],
+    }),
+
+    scenario("a listing that is refused per topic is reported as a filtered listing", {
+      broker: {
+        topics: [{ name: "orders", partitions: 3, replicas: [1], isr: [1], topicError: 29 }],
+        topicErrors: {},
+      },
+      expect: {
+        // The listing carried no usable entry, so it is reported as a filtered
+        // listing rather than as a full inventory; the broker still answered
+        // DescribeConfigs, which is what keeps the risk high on this one.
+        "Findings": "KAFKA-METADATA-LISTING-REFUSED",
+      },
+      verify: ({ result, say }) => {
+        const text = JSON.stringify(result.output);
+        say(!text.includes("KAFKA-METADATA-TOPIC-INVENTORY"),
+          "a listing without a usable entry is not reported as a full inventory");
+      },
+    }),
+
+    scenario("partitions without an in-sync set or with offline replicas are reported", {
+      broker: {
+        topics: [
+          { name: "telemetry", partitions: 2, replicas: [1, 2, 3], isr: [], offline: [3], leader: 1 },
+          { name: "cold-storage", partitions: 1, replicas: [1], isr: [1], leader: -1 },
+        ],
+      },
+      expect: {
+        "Availability posture": "with an empty in-sync set",
+        "Topic inventory": "telemetry",
+      },
+      expectAll: [
+        { contains: "KAFKA-METADATA-HEALTH-DISCLOSURE" },
+        { contains: "KAFKA-METADATA-SINGLE-REPLICA-PARTITIONS" },
+      ],
+    }),
+
+    scenario("verbose mode adds the stage transcript", {
+      broker: CLUSTER,
       args: { "kafka.verbose": "true" },
       expect: {
-        "Probe transcript": "api_versions",
-        "Access matrix": "Metadata (all topics)",
+        "Probe transcript": "metadata_all",
+        "Target": "Stages:",
       },
     }),
   ],

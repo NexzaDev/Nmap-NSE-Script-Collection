@@ -31,7 +31,8 @@ const API = {
   PRODUCE: 0, FETCH: 1, LIST_OFFSETS: 2, METADATA: 3, OFFSET_COMMIT: 8, OFFSET_FETCH: 9,
   FIND_COORDINATOR: 10, JOIN_GROUP: 11, HEARTBEAT: 12, LEAVE_GROUP: 13, SYNC_GROUP: 14,
   DESCRIBE_GROUPS: 15, LIST_GROUPS: 16, SASL_HANDSHAKE: 17, API_VERSIONS: 18,
-  CREATE_TOPICS: 19, DELETE_TOPICS: 20, DESCRIBE_CONFIGS: 32, SASL_AUTHENTICATE: 36,
+  CREATE_TOPICS: 19, DELETE_TOPICS: 20, DELETE_RECORDS: 21, DESCRIBE_CONFIGS: 32,
+  SASL_AUTHENTICATE: 36,
   DESCRIBE_CLUSTER: 60,
 };
 // Kafka's own specification spells the operations in CamelCase; the mock
@@ -41,19 +42,21 @@ const API_NAMES = {
   0: "Produce", 1: "Fetch", 2: "ListOffsets", 3: "Metadata", 8: "OffsetCommit", 9: "OffsetFetch",
   10: "FindCoordinator", 11: "JoinGroup", 12: "Heartbeat", 13: "LeaveGroup", 14: "SyncGroup",
   15: "DescribeGroups", 16: "ListGroups", 17: "SaslHandshake", 18: "ApiVersions",
-  19: "CreateTopics", 20: "DeleteTopics", 32: "DescribeConfigs", 36: "SaslAuthenticate",
+  19: "CreateTopics", 20: "DeleteTopics", 21: "DeleteRecords", 32: "DescribeConfigs",
+  36: "SaslAuthenticate",
   60: "DescribeCluster",
 };
 
 const FLEXIBLE_FROM = {
-  0: 9, 1: 12, 2: 6, 3: 9, 9: 6, 10: 3, 15: 5, 16: 3, 18: 3, 19: 5, 20: 4, 32: 4, 36: 2, 60: 0,
+  0: 9, 1: 12, 2: 6, 3: 9, 9: 6, 10: 3, 15: 5, 16: 3, 18: 3, 19: 5, 20: 4, 21: 2, 32: 4,
+  36: 2, 60: 0,
 };
 const STATUS = {
   NONE: 0, UNKNOWN_TOPIC_OR_PARTITION: 3, NOT_LEADER_OR_FOLLOWER: 6, NOT_COORDINATOR: 16,
   TOPIC_AUTHORIZATION_FAILED: 29, GROUP_AUTHORIZATION_FAILED: 30, CLUSTER_AUTHORIZATION_FAILED: 31,
   UNSUPPORTED_SASL_MECHANISM: 33, ILLEGAL_SASL_STATE: 34, UNSUPPORTED_VERSION: 35,
   TOPIC_ALREADY_EXISTS: 36, INVALID_CONFIG: 40, INVALID_REQUEST: 42, SECURITY_DISABLED: 54,
-  SASL_AUTHENTICATION_FAILED: 58, RESOURCE_NOT_FOUND: 91,
+  SASL_AUTHENTICATION_FAILED: 58, RESOURCE_NOT_FOUND: 91, UNKNOWN_TOPIC_ID: 100,
 };
 
 function isFlexible(api, version) {
@@ -97,7 +100,16 @@ class Reader {
   bytes() { const n = this.i32(); return n < 0 ? null : this.need(n); }
   compactStr() { const n = this.uvarint(); return n === 0 ? null : this.need(n - 1).toString("latin1"); }
   compactBytes() { const n = this.uvarint(); return n === 0 ? null : this.need(n - 1); }
-  array(fn) { const n = this.i32(); const out = []; for (let i = 0; i < n; i += 1) out.push(fn(this)); return out; }
+  // Kafka's array encoding says -1 is null and 0 is empty. Conflating the two
+  // made "give me every topic" (which the engine writes as -1) look like "give
+  // me nothing", so a classic-schema Metadata request answered with no topics.
+  array(fn) {
+    const n = this.i32();
+    if (n < 0) return null;
+    const out = [];
+    for (let i = 0; i < n; i += 1) out.push(fn(this));
+    return out;
+  }
   compactArray(fn) {
     const n = this.uvarint();
     if (n === 0) return null;
@@ -290,7 +302,8 @@ function createMockKafka(scenario = {}) {
     { key: 3, min: 0, max: 12 }, { key: 8, min: 0, max: 8 }, { key: 9, min: 0, max: 8 },
     { key: 10, min: 0, max: 4 }, { key: 15, min: 0, max: 5 }, { key: 16, min: 0, max: 4 },
     { key: 17, min: 0, max: 1 }, { key: 18, min: 0, max: 3 }, { key: 19, min: 0, max: 7 },
-    { key: 20, min: 0, max: 6 }, { key: 32, min: 0, max: 4 }, { key: 36, min: 0, max: 2 },
+    { key: 20, min: 0, max: 6 }, { key: 21, min: 0, max: 2 }, { key: 32, min: 0, max: 4 },
+    { key: 36, min: 0, max: 2 },
     { key: 60, min: 0, max: 1 },
   ];
 
@@ -298,7 +311,7 @@ function createMockKafka(scenario = {}) {
     requests: [], dropped: 0, protocolErrors: [], violations: [],
     saslAttempts: [], anonymousRequests: 0, createTopicsCalls: [], deleteTopicsCalls: [],
     scram: null, lastMechanism: null,
-    autoCreateRequests: 0, autoCreatedTopics: [], createdTopics: [],
+    autoCreateRequests: 0, autoCreatedTopics: [], createdTopics: [], deleteRecordsCalls: [],
     topicsAtStart: topics.map((t) => t.name),
   };
 
@@ -330,6 +343,17 @@ function createMockKafka(scenario = {}) {
     w.i32(scenario.throttleMs || 0);
     if (flex) w.tags();
     return w.result();
+  }
+
+  // A topic id is 16 bytes chosen by the controller. The mock derives it from
+  // the name so that a scan sees a stable id per topic and a script can compare
+  // ids across responses.
+  function topicId(t) {
+    if (!t.topicIdBuffer) {
+      t.topicIdBuffer = crypto.createHash("md5").update(String(t.name)).digest();
+      t.topicId = t.topicIdBuffer.toString("hex");
+    }
+    return t.topicIdBuffer;
   }
 
   function handleMetadata(req, version) {
@@ -367,7 +391,8 @@ function createMockKafka(scenario = {}) {
     }
     let selected;
     if (req.topics === null || req.topics === undefined) {
-      selected = topics;
+      const hidden = scenario.hiddenTopics || [];
+      selected = topics.filter((t) => !hidden.includes(t.name));
     } else {
       selected = topics.filter((t) => req.topics.includes(t.name));
       // Requesting a name the cluster does not host is a question about
@@ -384,7 +409,7 @@ function createMockKafka(scenario = {}) {
         || (t.missing ? (scenario.unknownTopicError || STATUS.UNKNOWN_TOPIC_OR_PARTITION) : 0);
       ww.i16(error || topicError);
       wStr(ww, flex, t.name);
-      if (version >= 10) ww.raw(Buffer.alloc(16, 1));
+      if (version >= 10) ww.raw(topicId(t));
       if (version >= 1) ww.bool(!!t.internal);
       const partitionCount = topicError ? 0 : t.partitions;
       wArray(ww, flex, Array.from({ length: partitionCount || 0 }, (_, i) => i), (w3, index) => {
@@ -591,6 +616,60 @@ function createMockKafka(scenario = {}) {
     return w.result();
   }
 
+  // The settings the config API answers with when a scenario does not supply its
+  // own table. The broker set carries the four settings that decide whether the
+  // cluster's ACLs are enforced at all, plus the sensitive keystore password
+  // that a broker is supposed to redact - which is why the scenario can turn
+  // that disclosure off explicitly.
+  function brokerDefaults() {
+    const sensitive = scenario.discloseSensitive === false;
+    return [
+      { name: "allow.everyone.if.no.acl.found", readOnly: false, sensitive: false, source: 5,
+        value: String(scenario.allowEveryoneIfNoAclFound === undefined ? false : scenario.allowEveryoneIfNoAclFound) },
+      { name: "authorizer.class.name", readOnly: false, sensitive: false, source: 5,
+        value: scenario.authorizerClass === undefined
+          ? "org.apache.kafka.metadata.authorizer.StandardAuthorizer" : scenario.authorizerClass },
+      { name: "super.users", readOnly: false, sensitive: false, source: 5,
+        value: scenario.superUsers === undefined ? "" : scenario.superUsers },
+      { name: "auto.create.topics.enable", readOnly: false, sensitive: false, source: 5,
+        value: String(scenario.autoCreateEnabled === undefined ? false : scenario.autoCreateEnabled) },
+      { name: "unclean.leader.election.enable", readOnly: false, sensitive: false, source: 5,
+        value: String(!!scenario.uncleanElection) },
+      { name: "zookeeper.connect", readOnly: false, sensitive: false, source: 5,
+        value: scenario.zookeeperConnect === undefined ? "" : scenario.zookeeperConnect },
+      { name: "listeners", readOnly: false, sensitive: false, source: 5,
+        value: scenario.listeners === undefined ? "SASL_SSL://0.0.0.0:9093" : scenario.listeners },
+      { name: "ssl.keystore.location", readOnly: false, sensitive: false, source: 5,
+        value: "/etc/kafka/ssl/kafka.keystore.jks" },
+      { name: "ssl.keystore.password", readOnly: false, sensitive: true, source: 4,
+        value: sensitive ? null : (scenario.keystorePassword || "admin123") },
+      { name: "offsets.topic.replication.factor", readOnly: false, sensitive: false, source: 5,
+        value: String(scenario.offsetsReplication === undefined ? 3 : scenario.offsetsReplication) },
+      { name: "log.retention.hours", readOnly: false, sensitive: false, source: 5,
+        value: String(scenario.retentionHours === undefined ? 168 : scenario.retentionHours) },
+      { name: "min.insync.replicas", readOnly: false, sensitive: false, source: 5,
+        value: String(scenario.minInsync === undefined ? 1 : scenario.minInsync) },
+    ];
+  }
+
+  // Topic settings: retention is the number that decides how much data a leak
+  // of the topic exposes, and min.insync.replicas is the one that decides what
+  // a write costs.
+  function topicDefaults() {
+    return [
+      { name: "cleanup.policy", readOnly: false, sensitive: false, source: 5, value: "delete" },
+      { name: "retention.ms", readOnly: false, sensitive: false, source: 5,
+        value: String(scenario.retentionMs === undefined ? 604800000 : scenario.retentionMs) },
+      { name: "segment.bytes", readOnly: false, sensitive: false, source: 5, value: "1073741824" },
+      { name: "min.insync.replicas", readOnly: false, sensitive: false, source: 5,
+        value: String(scenario.minInsync === undefined ? 1 : scenario.minInsync) },
+      { name: "unclean.leader.election.enable", readOnly: false, sensitive: false, source: 5,
+        value: String(!!scenario.uncleanElection) },
+      { name: "max.message.bytes", readOnly: false, sensitive: false, source: 5, value: "1048588" },
+      { name: "message.timestamp.type", readOnly: false, sensitive: false, source: 5, value: "CreateTime" },
+    ];
+  }
+
   function handleDescribeConfigs(req, version) {
     const flex = isFlexible(API.DESCRIBE_CONFIGS, version);
     const error = authError();
@@ -604,11 +683,7 @@ function createMockKafka(scenario = {}) {
       wStr(ww, flex, code ? "resource not available" : null);
       ww.i8(resource.type || 2);
       wStr(ww, flex, resource.name);
-      const entries = code ? [] : (configs[resource.name] || [
-        { name: "cleanup.policy", value: "delete", readOnly: false, sensitive: false, source: 5 },
-        { name: "min.insync.replicas", value: "1", readOnly: false, sensitive: false, source: 5 },
-        { name: "ssl.keystore.password", value: "admin123", readOnly: false, sensitive: true, source: 4 },
-      ]);
+      const entries = code ? [] : (configs[resource.name] || (isTopic ? topicDefaults() : brokerDefaults()));
       wArray(ww, flex, entries, (w3, entry) => {
         wStr(w3, flex, entry.name);
         wStr(w3, flex, entry.value);
@@ -685,19 +760,31 @@ function createMockKafka(scenario = {}) {
     const error = authError();
     const w = new Writer();
     if (version >= 1) w.i32(0);
-    state.deleteTopicsCalls.push({ names: req.names || [] });
+    const requestedIds = req.ids || [];
+    state.deleteTopicsCalls.push({ names: req.names || [], ids: requestedIds });
     wArray(w, flex, req.names || [], (ww, name) => {
+      const index = (req.names || []).indexOf(name);
+      const id = requestedIds[index];
       const exists = topics.some((t) => t.name === name);
       if (exists) {
         state.violations.push({ api: "DeleteTopics", message: `probe tried to delete existing topic ${name}` });
       }
       let code = 0;
       let message = null;
+      // Authorization runs before the lookup on every version, so the denial
+      // is answered first on the id path too.
       if (error) { code = error; message = "authorization failed"; }
-      else if (exists) { code = STATUS.INVALID_REQUEST; message = "refusing to delete a real topic"; }
       else if (scenario.deleteBehaviour === "denied") {
         code = STATUS.TOPIC_AUTHORIZATION_FAILED; message = "not authorized to delete topics";
-      } else if (scenario.deleteBehaviour === "invalid") {
+      } else if (version >= 6 && id && !/^0+$/.test(id)) {
+        // The v6 form is a lookup by id: a real id is chosen by the controller,
+        // so an id the cluster does not know is answered with UNKNOWN_TOPIC_ID.
+        // An all-zero id is the protocol's way of saying "use the name".
+        const known = topics.some((t) => t.topicId === id);
+        code = known ? STATUS.NONE : STATUS.UNKNOWN_TOPIC_ID;
+        message = known ? null : "This server does not host this topic ID.";
+      } else if (exists) { code = STATUS.INVALID_REQUEST; message = "refusing to delete a real topic"; }
+      else if (scenario.deleteBehaviour === "invalid") {
         code = STATUS.INVALID_REQUEST; message = "topic name is invalid";
       } else {
         code = STATUS.UNKNOWN_TOPIC_OR_PARTITION;
@@ -706,6 +793,44 @@ function createMockKafka(scenario = {}) {
       wStr(ww, flex, name);
       ww.i16(code);
       if (version >= 5) wStr(ww, flex, message);
+      if (flex) ww.tags();
+    });
+    if (flex) w.tags();
+    return w.result();
+  }
+
+  function handleDeleteRecords(req, version) {
+    // DeleteRecords moves the log start offset forward. The mock records the
+    // request, answers the low watermark it would produce, and flags any
+    // request that asked for an offset above zero on a topic that holds
+    // records, because that would discard data on a live cluster.
+    const flex = isFlexible(API.DELETE_RECORDS, version);
+    const error = authError();
+    const w = new Writer();
+    if (version >= 1) w.i32(scenario.throttleMs || 0);
+    wArray(w, flex, req.deleteTopics || [], (ww, topic) => {
+      wStr(ww, flex, topic.name);
+      const known = topics.some((t) => t.name === topic.name);
+      wArray(ww, flex, topic.partitions || [], (w3, partition) => {
+        state.deleteRecordsCalls.push({
+          name: topic.name, partition: partition.partition, offset: Number(partition.offset),
+        });
+        let code = 0;
+        if (error) code = error;
+        else if (!known) code = STATUS.UNKNOWN_TOPIC_OR_PARTITION;
+        else if (scenario.deleteRecordsDenied) code = STATUS.TOPIC_AUTHORIZATION_FAILED;
+        else if (Number(partition.offset) > 0) {
+          code = STATUS.INVALID_REQUEST;
+          state.violations.push({
+            api: "DeleteRecords",
+            message: `probe asked to discard records below offset ${partition.offset} of ${topic.name}`,
+          });
+        }
+        w3.i32(partition.partition);
+        w3.i64(code === 0 ? 0 : -1);
+        w3.i16(code);
+        if (flex) w3.tags();
+      });
       if (flex) ww.tags();
     });
     if (flex) w.tags();
@@ -811,6 +936,7 @@ function createMockKafka(scenario = {}) {
     [API.FETCH]: handleFetch,
     [API.DESCRIBE_CONFIGS]: handleDescribeConfigs,
     [API.CREATE_TOPICS]: handleCreateTopics,
+    [API.DELETE_RECORDS]: handleDeleteRecords,
     [API.DELETE_TOPICS]: handleDeleteTopics,
   };
 
@@ -829,9 +955,13 @@ function createMockKafka(scenario = {}) {
         // exists per struct, so no tags are read after each name.
         const topics = rArray(r, flex, (rr) => rStr(rr, flex));
         const autoCreate = version >= 4 ? r.bool() : false;
-        if (version >= 8) { r.bool(); r.bool(); }
+        let includeTopicOps = false;
+        if (version >= 8) {
+          r.bool();
+          includeTopicOps = r.bool();
+        }
         if (flex) r.tags();
-        return { topics, autoCreate };
+        return { topics, autoCreate, includeTopicOps };
       }
       case API.DESCRIBE_CLUSTER:
         r.bool();
@@ -968,21 +1098,40 @@ function createMockKafka(scenario = {}) {
         if (flex) r.tags();
         return { topics, timeoutMs, validateOnly };
       }
+      case API.DELETE_RECORDS: {
+        const deleteTopics = rArray(r, flex, (rr) => {
+          const name = rStr(rr, flex);
+          const partitions = rArray(rr, flex, (r3) => {
+            const partition = r3.i32();
+            const offset = r3.i64();
+            if (flex) r3.tags();
+            return { partition, offset };
+          });
+          if (flex) rr.tags();
+          return { name, partitions };
+        });
+        const timeoutMs = r.i32();
+        if (flex) r.tags();
+        return { deleteTopics, timeoutMs };
+      }
       case API.DELETE_TOPICS: {
         let names;
+        let ids = [];
         if (version >= 6) {
-          names = r.compactArray((rr) => {
+          const entries = r.compactArray((rr) => {
             const name = rr.compactStr();
-            rr.need(16);
+            const id = rr.need(16);
             rr.tags();
-            return name;
+            return { name, id };
           });
+          names = entries.map((entry) => entry.name);
+          ids = entries.map((entry) => entry.id.toString("hex"));
         } else {
           names = rArray(r, flex, (rr) => rStr(rr, flex));
         }
         r.i32();
         if (flex) r.tags();
-        return { names };
+        return { names, ids };
       }
       default:
         return {};
@@ -991,6 +1140,14 @@ function createMockKafka(scenario = {}) {
 
   function handle(payload) {
     state.requests.push({ bytes: payload.length, at: Date.now() });
+    if (scenario.changeTopicsAfterRequests
+      && state.requests.length === scenario.changeTopicsAfterRequests) {
+      // Models the other actor: something outside the scan changes the cluster
+      // while it runs, which the script's before/after comparison must notice.
+      topics.push({ name: scenario.changeTopicName || "ghost-topic", partitions: 1,
+        replicas: [1], isr: [1] });
+      state.externalTopicChanges = (state.externalTopicChanges || 0) + 1;
+    }
     if (scenario.dropFirst && state.dropped < scenario.dropFirst) {
       state.dropped += 1;
       return null;
@@ -1060,6 +1217,12 @@ function createMockKafka(scenario = {}) {
       }
       if ((scenario.faultOnApi || {})[apiKey]) return null;
       const request = parseRequest(apiKey, effective, r);
+      if (apiKey === API.METADATA) {
+        entry.topicCount = (request.topics === null || request.topics === undefined)
+          ? null : request.topics.length;
+        entry.autoCreate = request.autoCreate === true;
+        entry.namedTopics = request.topics || null;
+      }
       if (scenario.idleAfter && state.requests.length > scenario.idleAfter + 1) return null;
       w.raw(handler(request, effective));
       const framed = frame(w.result());

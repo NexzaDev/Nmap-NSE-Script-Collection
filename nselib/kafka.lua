@@ -2302,9 +2302,24 @@ function M.delete_topics(conn, names, opts)
 
   local w = M.writer()
   if version >= 6 then
+    -- The v6 entry is { Name, TopicId }. A broker resolves an entry by id when
+    -- the id is not the all-zero uuid and by name otherwise, so a caller that
+    -- passes topic_id here is asking about an id it does not own.
+    local id = opts.topic_id
+    if type(id) == "string" then
+      if string.find(id, "^%x%x") and #id == 32 then
+        local bytes = {}
+        for index = 1, 32, 2 do
+          bytes[#bytes + 1] = string.char(tonumber(string.sub(id, index, index + 1), 16) or 0)
+        end
+        id = table.concat(bytes)
+      end
+      if #id ~= 16 then id = nil end
+    end
+    id = id or string.rep("\0", 16)
     w:compact_array(names, function(ww, name)
       ww:compact_str(name)
-      ww:raw(string.rep("\0", 16)):tags()
+      ww:raw(id):tags()
     end)
   else
     w:array(names, function(ww, name) ww:str(name) end)
@@ -2338,6 +2353,81 @@ end
 -- configured but not enforced for everything, or that a PLAINTEXT listener is
 -- reachable directly. The engine implements the handshake plus two mechanisms
 -- so a credential can actually be tested instead of guessed.
+
+----------------------------------------------------------------------------
+-- §19 DeleteRecords (API key 21)
+----------------------------------------------------------------------------
+--
+-- DeleteRecords moves the log start offset of a partition forward, which is
+-- what "discard these records" means in Kafka. It is included here because it
+-- is the API that reveals the DELETE operation on an existing topic: a request
+-- for an offset at or below the current low watermark removes nothing at all,
+-- and the answer still says whether the caller was authorized.
+--
+-- Request:  Topics[] { Name, Partitions[] { PartitionIndex, Offset } }, TimeoutMs
+-- Response: [ThrottleTimeMs v1+] Topics[] { Name, Partitions[] { PartitionIndex,
+--           LowWatermark, ErrorCode } }
+function M.delete_records(conn, entries, opts)
+  opts = opts or {}
+  local version = opts.version or M.version_for(conn, 21)
+  if not version then return { ok = false, error = "DeleteRecords API not offered by broker" } end
+  local flex = M.flexible(21, version)
+
+  local w = M.writer()
+  if flex then
+    w:compact_array(entries, function(ww, topic)
+      ww:compact_str(topic.name)
+      ww:compact_array(topic.partitions, function(w3, partition)
+        w3:i32(partition.partition)
+        w3:i64(partition.offset or 0)
+        w3:tags()
+      end)
+      ww:tags()
+    end)
+  else
+    w:array(entries, function(ww, topic)
+      ww:str(topic.name)
+      ww:array(topic.partitions, function(w3, partition)
+        w3:i32(partition.partition)
+        w3:i64(partition.offset or 0)
+      end)
+    end)
+  end
+  w:i32(opts.timeout_ms or 5000)
+  if flex then w:tags() end
+
+  local r, err = M.exchange(conn, 21, version, w:result())
+  if not r then return { ok = false, error = err, version = version } end
+
+  local out = { ok = true, version = version, requested_offset = opts.offset }
+  if version >= 1 then out.throttle_ms = r:i32() end
+  out.topics = M.read_array(r, flex, function(rr)
+    local name = M.read_string(rr, flex)
+    local partitions = M.read_array(rr, flex, function(r3)
+      local index = r3:i32()
+      local low_watermark = r3:i64()
+      local ec = r3:i16()
+      if flex then r3:tags() end
+      if index == nil then return nil, "truncated delete-records partition" end
+      return { partition = index, low_watermark = low_watermark, error_code = ec,
+        error_name = M.error_name(ec or 0) }
+    end)
+    if flex then rr:tags() end
+    return { name = name, partitions = partitions or {} }
+  end) or {}
+  out.trailing_bytes = r:remaining()
+  local granted, denied, errors = 0, 0, 0
+  for _, topic in ipairs(out.topics) do
+    for _, partition in ipairs(topic.partitions) do
+      if partition.error_code == 0 then granted = granted + 1
+      elseif M.is_authz_error(partition.error_code) then denied = denied + 1
+      else errors = errors + 1 end
+    end
+  end
+  out.partitions_granted, out.partitions_denied, out.partitions_errored = granted, denied, errors
+  out.access = granted > 0 and "granted" or (denied > 0 and "denied" or (errors > 0 and "error" or "empty"))
+  return out
+end
 
 function M.sasl_handshake(conn, mechanism, opts)
   opts = opts or {}

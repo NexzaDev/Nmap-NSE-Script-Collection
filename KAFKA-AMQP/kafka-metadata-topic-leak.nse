@@ -10,99 +10,109 @@ local ok, kafka = pcall(require, "kafka")
 -- Findings are published through Nmap's vulnerability machinery as well as
 -- through the script table; the module is optional so the script still runs
 -- under a minimal NSE installation.
-local has_vulns, vulns = pcall(require, "vulns")
+
 
 description = [[
-Maps everything the Metadata API of a Kafka cluster reveals to a caller it has
-not authenticated, and turns that map into an exposure report.
+Reads a Kafka cluster's metadata without authenticating and measures how much of
+the cluster the answer describes.
 
-Metadata is the API every Kafka client calls first, and by default it answers
-before any credential is checked. The answer contains the whole cluster: every
-topic with its name, its internal flag, its partition count, and for every
-partition the leader, the replica set, the in-sync set, the offline set, the
-leader epoch, and - where the broker version carries them - the stable topic id
-and the topic's own authorized-operation mask.
+Metadata is the API that every Kafka client calls first, and it is answered
+before ACLs are consulted on listeners that do not require authentication. The
+answer is not a list of names: it carries the cluster id, the controller, every
+broker's host, port and rack, every topic's id, partition count, replica set and
+in-sync set, the internal topics that reveal which subsystems the deployment
+runs, offline replicas, leader epochs, and per-topic authorized operations.
 
-The script reads that answer three ways:
+This script turns that response into an inventory and then asks the questions
+that decide how much of it is exposure:
 
-  * as an inventory: which topics exist, which of them are internal, how many
-    partitions and replicas each one has, and which are unhealthy;
-  * as a configuration leak: with DescribeConfigs it asks for the broker and
-    topic settings that shape how much data exists and how long it is kept
-    (retention, segment size, min.insync.replicas, cleanup policy, auto-create);
-  * as an authorization boundary: by naming topics one at a time it observes
-    which names the caller is allowed to see, and by asking for a name the
-    cluster cannot host (with allow_auto_topic_creation forced to false) it
-    measures whether a refusal is an authorization error or an existence error.
+  * Which topics are internal, and what does each internal topic prove about the
+    deployment (consumer groups, transactions, Schema Registry, Kafka Connect,
+    Streams, a canary)? Internal topics are the ones whose removal or corruption
+    stops the pipeline rather than one application.
+  * How many partitions and replicas exist in total, how many are
+    under-replicated, which partitions have an empty in-sync set, and which
+    replicas are offline? Those numbers are the cluster's current availability
+    posture, and they are published to an unauthenticated caller.
+  * Is the listing filtered per principal, and does asking for a name directly
+    return what the listing hid? A metadata response that lists every topic to
+    one caller and refuses another proves that ACLs exist; a response that hides
+    a topic in the listing but describes it when named is an existence oracle.
+  * Do the topic names themselves leak the organisation - payment, identity,
+    health, audit, staging - and do the authorized-operations masks tell the
+    caller what it may do to each topic?
+  * Do the broker settings that an auto-created topic would inherit (retention,
+    segment size, minimum in-sync replicas, unclean leader election) point at a
+    cluster where a single caller can fill the disk or lose acknowledged
+    writes?
 
-The last distinction is the point of the report. An unauthenticated caller that
-can enumerate topics learns the shape of the business; a caller that can also
-read the configuration learns how much of it is in flight, how long it is kept
-and whether anything enforces durability. Both are read-only observations and
-nothing here writes to the cluster.
-
-Topic names themselves are analysed against a pattern set for payment, identity,
-health, human-resources and credential material, because a leaked topic list is
-a leaked list of the systems that matter.
+The script is strictly read-only. It sends ApiVersions, Metadata,
+DescribeCluster and DescribeConfigs, never sets allow_auto_topic_creation, and
+re-reads the topic list at the end so the report can state that the inventory it
+printed is the inventory that exists.
 ]]
 
----
--- @usage
--- nmap -p 9092 --script kafka-metadata-topic-leak <target>
--- nmap -p 9092 --script kafka-metadata-topic-leak --script-args kafka.topics=orders,payments,kafka.verbose=true <target>
---
--- @args kafka.timeout        Per-request timeout in milliseconds
---                            (default 5000, range 500-60000).
--- @args kafka.client-id      Client id used in every request header
---                            (default "nmap-kafka-metadata-audit").
--- @args kafka.topics         Comma separated topic names to request by name in
---                            addition to the full listing. Default: the first
---                            ten topics the full listing returned.
--- @args kafka.max-topics     Maximum topics carried into the report
---                            (default 200, range 1-2000).
--- @args kafka.configs        "true" (default) reads broker and topic
---                            configurations with DescribeConfigs.
--- @args kafka.max-configs    Maximum configuration rows printed per resource
---                            (default 20, range 1-200).
--- @args kafka.unknown-topic-probe
---                            "true" asks the cluster about one name that cannot
---                            exist, with allow_auto_topic_creation set to
---                            false, to tell an authorization refusal apart from
---                            an existence error. Default: true. The probe never
---                            asks the broker to create anything.
--- @args kafka.patterns       Comma separated extra name patterns to look for in
---                            topic names (default: a built-in sensitive set).
--- @args kafka.verbose        "true" adds the per-stage transcript.
---
--- @output
--- 9092/tcp open  kafka
--- | kafka-metadata-topic-leak:
--- |   Cluster: nse-mock-cluster, controller node 1, 3 brokers
--- |   Topics visible without authentication: 12 (2 internal)
--- |   payments-eu: 24 partitions, replication 3, ISR 2/3 (under-replicated)
--- |   Configuration read: retention.ms=604800000, min.insync.replicas=1
--- |   Sensitive names: payments-eu (payment), customer-pii (identity)
--- |_  Risk Level: CRITICAL
----
 
-if not ok or type(kafka) ~= "table" then
-  action = function()
-    return stdnse.format_output(true, {
-      "The Kafka engine (nselib/kafka.lua) is not installed.",
-      "Install it next to this script and re-run the scan.",
-    })
+-- Findings are published through Nmap's vulnerability machinery when it is
+-- available. Under the test harness the module is a stand-in whose Report
+-- returns an object with add(); under a real Nmap installation it is the
+-- class-based API, so both shapes are handled here and a VULNERABLE line appears
+-- in the Nmap output either way.
+local has_vulns, vulns_lib = pcall(require, "vulns")
+
+local function vuln_publisher(host, port)
+  if not has_vulns or type(vulns_lib) ~= "table" then return nil end
+  local ok, publisher = pcall(function()
+    -- Nmap's own library is a class whose instances carry the endpoint.
+    if type(vulns_lib.Report) == "table" and type(vulns_lib.Report.new) == "function" then
+      local report = vulns_lib.Report:new(SCRIPT_NAME, host, port)
+      return function(id, title, detail)
+        report:add(id, title, { format = function() return detail end })
+      end
+    end
+    -- The test stand-in answers Report() with an object that takes the endpoint
+    -- itself, so the two calling conventions are adapted here instead of being
+    -- assumed.
+    if type(vulns_lib.Report) == "function" then
+      local report = vulns_lib.Report(host, port)
+      return function(id, title, detail)
+        report.add(host, port, id, title, { format = function() return detail end })
+      end
+    end
+    return nil
+  end)
+  if ok and type(publisher) == "function" then return publisher end
+  return nil
+end
+
+local function publish_findings(host, port, list)
+  local publish = vuln_publisher(host, port)
+  if not publish then return end
+  for _, item in ipairs(list) do
+    if item.severity == "CRITICAL" or item.severity == "HIGH" or item.severity == "MEDIUM" then
+      publish(item.id, item.title, item.detail)
+    end
   end
-  return
 end
 
 author = "custom"
 license = "Same as Nmap--See https://nmap.org/book/man-legal.html"
-categories = {"vuln", "safe"}
+categories = {"vuln", "safe", "discovery"}
 
 portrule = shortport.port_or_service({9092, 9093, 9094, 19092, 29092}, "kafka", {"tcp"})
 
 local SCRIPT_RISK = "CRITICAL"
+local SCRIPT_NAME = "kafka-metadata-topic-leak"
 local SCRIPT_VERSION = "2.0.0"
+
+-- The metadata API is the whole script, so the version the broker will use is
+-- pinned here: a newer schema adds fields the inventory reports (topic ids from
+-- v10, leader epochs from v7, offline replicas from v5) and the script prefers
+-- the newest form the broker offers so the inventory is not truncated by the
+-- shape of an older response.
+local METADATA_PREFERENCE = 12
+local DESCRIBE_CLUSTER_PREFERENCE = 1
+local DESCRIBE_CONFIGS_PREFERENCE = 4
 
 ----------------------------------------------------------------------------
 -- 1. Configuration
@@ -136,31 +146,28 @@ local function arg_bool(name, default)
   return default
 end
 
-local function split_list(raw, limit)
-  if raw == nil or raw == "" then return nil end
+local function arg_list(name, default, maximum)
+  local raw = nmap.registry.args and nmap.registry.args[name]
+  if raw == nil then return default end
   local out = {}
-  for piece in string.gmatch(raw, "[^,%s]+") do
-    if limit and #out >= limit then break end
-    out[#out + 1] = piece
+  for item in string.gmatch(tostring(raw), "[^,]+") do
+    local trimmed = string.gsub(item, "^%s*(.-)%s*$", "%1")
+    if #trimmed > 0 and #out < (maximum or 16) then out[#out + 1] = trimmed end
   end
-  return #out > 0 and out or nil
+  return out
 end
 
 local function read_config()
-  local cfg = {
+  return {
     timeout = arg_number("kafka.timeout", 5000, 500, 60000),
     client_id = arg_string("kafka.client-id", "nmap-kafka-metadata-audit", 120),
-    topics = split_list(arg_string("kafka.topics", nil, 4000), 200),
-    max_topics = arg_number("kafka.max-topics", 200, 1, 2000),
-    configs = arg_bool("kafka.configs", true),
-    max_configs = arg_number("kafka.max-configs", 20, 1, 200),
-    unknown_probe = arg_bool("kafka.unknown-topic-probe", true),
-    patterns = split_list(arg_string("kafka.patterns", nil, 600)),
-    retry = not arg_bool("kafka.no-retry", false),
+    max_topics = arg_number("kafka.max-topics", 50, 1, 10000),
+    max_configs = arg_number("kafka.max-configs", 10, 0, 200),
+    named_probe = arg_bool("kafka.named-probe", true),
+    names = arg_list("kafka.names", {}, 16),
+    unknown_probe = arg_bool("kafka.unknown-probe", false),
     verbose = arg_bool("kafka.verbose", false),
   }
-  cfg.transient_backoff_ms = 250
-  return cfg
 end
 
 ----------------------------------------------------------------------------
@@ -168,916 +175,1052 @@ end
 ----------------------------------------------------------------------------
 
 local function fmt_bool(value)
-  return value == nil and "unknown" or (value and "yes" or "no")
+  if value == nil then return "unknown" end
+  return value and "true" or "false"
 end
 
-local plural = kafka.fmt_plural
-local fmt_list = kafka.fmt_list
-local num_text = kafka.fmt_num
+local function plural(count, singular, plural_form)
+  count = tonumber(count) or 0
+  if count == 1 then return string.format("%d %s", count, singular) end
+  return string.format("%d %s", count, plural_form or (singular .. "s"))
+end
 
-local SEVERITY_ORDER = { CRITICAL = 5, HIGH = 4, MEDIUM = 3, LOW = 2, INFO = 1, NONE = 0, UNKNOWN = 0 }
-
-local function worst(list, fallback)
-  local highest = fallback or "NONE"
-  for _, item in ipairs(list or {}) do
-    if (SEVERITY_ORDER[item.severity] or 0) > (SEVERITY_ORDER[highest] or 0) then
-      highest = item.severity
+-- Numbers arrive from the wire as Lua numbers; integers are printed without a
+-- decimal part and anything that is not a number is passed through unchanged.
+local function num_text(value)
+  if value == nil then return "n/a" end
+  if type(value) ~= "number" then return tostring(value) end
+  if value ~= value then return "NaN" end
+  if value == math.huge then return "inf" end
+  if value == -math.huge then return "-inf" end
+  if value == math.floor(value) and math.abs(value) < 1e15 then
+    if value < 0 then
+      return string.format("-%d", -value)
     end
+    return string.format("%d", value)
   end
-  return highest
+  return string.format("%.3f", value)
 end
-
-local function finding(id, title, severity, detail, evidence, remediation)
-  return { id = id, title = title, severity = severity, detail = detail,
-    evidence = evidence or {}, remediation = remediation or {} }
-end
-
--- A sorted list of the keys of a map, so two runs of the script print the same
--- report in the same order.
-local function sorted_keys(map)
-  local keys = {}
-  for key in pairs(map or {}) do keys[#keys + 1] = key end
-  table.sort(keys)
-  return keys
-end
-
--- Topic ids arrive as sixteen raw bytes. They are rendered here rather than by
--- the engine's numeric helper, which takes a number and not a byte string.
-local HEX_DIGITS = "0123456789abcdef"
 
 local function hex_bytes(text)
-  if not text or #text == 0 then return "-" end
+  if type(text) ~= "string" then return tostring(text) end
   local out = {}
   for index = 1, #text do
-    local b = string.byte(text, index)
-    local hi = math.floor(b / 16) % 16 + 1
-    local lo = b % 16 + 1
-    out[#out + 1] = string.sub(HEX_DIGITS, hi, hi) .. string.sub(HEX_DIGITS, lo, lo)
+    out[#out + 1] = string.format("%02x", string.byte(text, index))
   end
   return table.concat(out)
 end
 
-local function count_of(map)
+local function sorted_keys(map)
+  local keys = {}
+  for key in pairs(map or {}) do keys[#keys + 1] = key end
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  return keys
+end
+
+local function fmt_list(values, limit, empty_text)
+  if not values or #values == 0 then return empty_text or "none" end
+  local out = {}
+  for index = 1, math.min(#values, limit or 6) do out[#out + 1] = tostring(values[index]) end
+  if #values > (limit or 6) then
+    out[#out + 1] = string.format("(+%d more)", #values - (limit or 6))
+  end
+  return table.concat(out, ", ")
+end
+
+local function count_where(list, predicate)
+  local count = 0
+  for _, item in ipairs(list) do
+    if predicate(item) then count = count + 1 end
+  end
+  return count
+end
+
+local function sum_where(list, predicate, selector)
   local total = 0
-  for _ in pairs(map or {}) do total = total + 1 end
+  for _, item in ipairs(list) do
+    if not predicate or predicate(item) then total = total + (selector(item) or 0) end
+  end
   return total
 end
 
-----------------------------------------------------------------------------
--- 3. Wire layer
-----------------------------------------------------------------------------
-
-local function new_wire(host, port, cfg)
-  local w = {
-    host = host, port = port, cfg = cfg,
-    connection = nil, connected = false, failure = nil,
-    stages = {}, version_map = {}, negotiate_summary = nil,
+local function finding(id, title, severity, detail, evidence, remediation)
+  return {
+    id = id,
+    title = title,
+    severity = severity,
+    detail = detail,
+    evidence = evidence or {},
+    remediation = remediation or {},
   }
-
-  function w:stage(name, detail)
-    self.stages[#self.stages + 1] = { name = name, detail = detail, at = os.time() }
-  end
-
-  function w:connect()
-    if self.connected then return true end
-    self:stage("connect", string.format("%s:%d/tcp", host.ip or "target", port.number))
-    local conn = kafka.new_connection(host.ip or self.host, port.number, {
-      timeout_ms = self.cfg.timeout, client_id = self.cfg.client_id,
-    })
-    if not conn.sock then
-      self.failure = conn.last_error or "connect failed"
-      self:stage("connect", "failed: " .. tostring(self.failure))
-      return false, self.failure
-    end
-    self.connection = conn
-    self.connected = true
-    return true
-  end
-
-  function w:close()
-    if self.connection then self.connection:close() end
-    self.connected = false
-  end
-
-  function w:negotiate()
-    if self.negotiate_summary then return self.version_map end
-    local summary, err = kafka.negotiate(self.connection)
-    if not summary then
-      self:stage("api_versions", "failed: " .. tostring(err))
-      self.failure = self.failure or err
-      return nil, err
-    end
-    self.negotiate_summary = summary
-    self.version_map = summary.versions or {}
-    self:stage("api_versions", string.format("broker offers %s", plural(summary.count or 0, "API")))
-    return self.version_map
-  end
-
-  -- Every request goes through here, so a transient broker-side error is
-  -- retried once and a permanent one is reported with its name.
-  function w:call(label, fn)
-    local attempts = self.cfg.retry and 2 or 1
-    local last = nil
-    for attempt = 1, attempts do
-      local result = fn(attempt)
-      if result and result.ok then return result end
-      last = result
-      local code = result and result.error_code
-      local entry = code and kafka.ERRORS and kafka.ERRORS[code]
-      if not (entry and entry.retriable) or attempt == attempts then break end
-      self:stage(label, "transient error, retrying: " .. tostring(result.error))
-      stdnse.sleep(self.cfg.transient_backoff_ms / 1000)
-    end
-    return last
-  end
-
-  return w
 end
 
+local function worst(list, default)
+  local level, text = -1, default
+  for _, item in ipairs(list) do
+    local value = kafka.SEVERITY_ORDER[item.severity]
+    if value and value > level then
+      level, text = value, item.severity
+    end
+  end
+  return text
+end
+
+-- Percentages are printed as a ratio against the population they came from, or
+-- as "-" when there is no population, so a report never shows a percentage of
+-- zero as if it meant something.
+local function ratio(part, whole)
+  if not whole or whole == 0 then return "-" end
+  return string.format("%.1f%%", 100 * part / whole)
+end
+
+----------------------------------------------------------------------------
+-- 3. Connection and stage transcript
+----------------------------------------------------------------------------
+
+local Wire = {}
+Wire.__index = Wire
+
+function Wire.new(host, port, cfg)
+  local self = setmetatable({}, Wire)
+  self.cfg = cfg
+  self.host = host
+  self.port = port
+  self.stages = {}
+  self.failures = {}
+  self.flags = {}
+  self.connection = kafka.new_connection(host.ip or host.name or "target", port.number, {
+    timeout_ms = cfg.timeout,
+    client_id = cfg.client_id,
+  })
+  return self
+end
+
+-- Every request option that matters for safety is recorded as it is used, so the
+-- safety ledger reads back what the script really sent instead of repeating what
+-- the code intended to send.
+function Wire:flag(name, value)
+  local entry = self.flags[name] or { true_count = 0, false_count = 0, values = {} }
+  if value then entry.true_count = entry.true_count + 1
+  else entry.false_count = entry.false_count + 1 end
+  entry.values[#entry.values + 1] = value
+  self.flags[name] = entry
+  return value
+end
+
+function Wire:stage(name, detail, ok)
+  self.stages[#self.stages + 1] = { name = name, detail = detail, ok = ok ~= false }
+  return self
+end
+
+function Wire:fail(stage, reason)
+  self.failures[#self.failures + 1] = { stage = stage, reason = tostring(reason) }
+  self:stage(stage, tostring(reason), false)
+  return self
+end
+
+function Wire:close()
+  if self.connection and self.connection.close then self.connection:close() end
+  return self
+end
+
+-- Every probe is wrapped: a transport failure is recorded with the error text
+-- the socket produced, and each request is accounted for whether it was
+-- answered or not, so "no answer" is never silently the same as "no exposure".
+function Wire:call(stage, fn)
+  local ok, result, err = pcall(fn)
+  if not ok then
+    self:fail(stage, "probe error: " .. tostring(result))
+    return { ok = false, error = "probe error: " .. tostring(result), stage = stage }
+  end
+  if not result then
+    self:fail(stage, err or "no response")
+    return { ok = false, error = err or "no response", stage = stage }
+  end
+  self:stage(stage, "answered")
+  return result
+end
+
+function Wire:version(key, preference)
+  local connection = self.connection
+  if connection.versions and next(connection.versions) ~= nil then
+    return kafka.version_for(connection, key, preference)
+  end
+  return preference
+end
 
 ----------------------------------------------------------------------------
 -- 4. Probes
 ----------------------------------------------------------------------------
---
--- Each probe keeps two things apart: what the broker answered, and whether the
--- caller was allowed to ask. A refusal is a result, not a failure, and the
--- report is explicit about which of the two it is looking at.
 
 local probe = {}
 
 function probe.negotiate(w)
-  local versions, err = w:negotiate()
-  if not versions then
-    return { stage = "api_versions", answered = false, error = err, access = "unknown" }
+  local result, err = w.connection and kafka.negotiate(w.connection, {})
+  if not result then
+    w:fail("api_versions", err or "no ApiVersions response")
+    return { answered = false, error = err or "no ApiVersions response" }
   end
-  local summary = w.negotiate_summary
   local out = {
-    stage = "api_versions", answered = true,
-    access = (summary.error_code == 0) and "granted" or "error",
-    error_code = summary.error_code, error_name = summary.error_name,
-    api_count = summary.count, versions = versions,
-    version_rows = kafka.version_table(w.connection),
+    answered = true,
+    error_code = result.error_code,
+    error_name = result.error_name,
+    throttle_ms = result.throttle_ms,
+    count = result.count,
+    api_error = result.error_code ~= 0,
   }
-  for _, entry in ipairs({ { 3, "metadata" }, { 32, "describe_configs" }, { 60, "describe_cluster" },
-    { 16, "list_groups" }, { 19, "create_topics" }, { 20, "delete_topics" }, { 36, "sasl_handshake" } }) do
-    local record = versions[entry[1]]
-    if record then out[entry[2] .. "_version"] = record.broker_max end
-  end
+  w:stage("api_versions", string.format("broker offers %s", plural(result.count or 0, "API")))
   return out
 end
 
--- The full listing: a null topic array is the protocol's "everything" wildcard
--- from Metadata v1 onwards, and the request asks for the two authorized
--- operation masks so the report can say whether the caller was even told what
--- it may do.
-function probe.metadata_all(w)
+function probe.metadata_all(w, cfg)
+  local version = w:version(3, METADATA_PREFERENCE)
+  if not version then
+    return { answered = false, error = "the broker does not advertise Metadata" }
+  end
+  w:flag("metadata.auto_create", false)
   local result = w:call("metadata_all", function()
     return kafka.metadata(w.connection, nil, {
-      auto_create = false, cluster_authorized_operations = true,
+      version = version,
+      auto_create = false,
+      cluster_authorized_operations = true,
       topic_authorized_operations = true,
     })
   end)
-  if not result or not result.ok then
-    return { stage = "metadata_all", answered = false,
-      error = result and result.error or "no response", version = result and result.version }
-  end
+  if not result.ok then return { answered = false, error = result.error, version = version } end
   local out = {
-    stage = "metadata_all", answered = true, version = result.version,
-    flexible = result.flexible, topics = result.topics or {}, brokers = result.brokers or {},
-    cluster_id = result.cluster_id, controller_id = result.controller_id,
-    throttle_ms = result.throttle_ms, error_code = result.error_code,
-    error_name = result.error_name,
-    cluster_authorized_operations = result.cluster_authorized_operations,
-    trailing_bytes = result.trailing_bytes,
-    requested = "all",
-  }
-  local with_data, errors = 0, 0
-  for _, topic in ipairs(out.topics) do
-    if topic.error_code and topic.error_code ~= 0 then errors = errors + 1 else with_data = with_data + 1 end
-  end
-  out.topics_with_data, out.topics_with_error = with_data, errors
-  -- A negative cluster mask is the broker's way of saying it did not compute
-  -- the authorized-operation set, which is what an authorizer that filters the
-  -- listing returns to a principal it does not trust.
-  local mask = out.cluster_authorized_operations
-  out.mask_withheld = mask ~= nil and (mask < 0 or mask >= 2147483648)
-  if with_data > 0 then
-    out.access = "granted"
-  elseif errors > 0 or kafka.is_authz_error(out.error_code) then
-    out.access = "denied"
-  elseif out.mask_withheld then
-    out.access = "filtered"
-  else
-    out.access = "empty"
-  end
-  return out
-end
-
--- Naming topics one at a time is how the script observes the per-topic
--- authorization boundary: a name that is listed in the full response but comes
--- back as TOPIC_AUTHORIZATION_FAILED when named individually tells the caller
--- that an ACL exists on that topic and that the caller is not on it.
-function probe.metadata_by_name(w, names)
-  if not names or #names == 0 then
-    return { stage = "metadata_by_name", answered = true, skipped = "no topic name was selected", topics = {} }
-  end
-  local result = w:call("metadata_by_name", function()
-    return kafka.metadata(w.connection, names, {
-      auto_create = false, cluster_authorized_operations = false,
-      topic_authorized_operations = true,
-    })
-  end)
-  if not result or not result.ok then
-    return { stage = "metadata_by_name", answered = false, requested = names,
-      error = result and result.error or "no response", version = result and result.version, topics = {} }
-  end
-  local out = {
-    stage = "metadata_by_name", answered = true, version = result.version,
-    requested = names, topics = result.topics or {},
-    cluster_id = result.cluster_id, controller_id = result.controller_id,
+    stage = "metadata_all",
+    answered = true,
+    version = version,
+    cluster_id = result.cluster_id,
+    controller_id = result.controller_id,
     brokers = result.brokers or {},
+    topics = result.topics or {},
+    cluster_authorized_operations = result.cluster_authorized_operations,
+    throttle_ms = result.throttle_ms,
+    requested = "all topics",
   }
-  local granted, denied = 0, 0
-  for _, topic in ipairs(out.topics) do
-    if topic.error_code == 0 then granted = granted + 1
-    elseif kafka.is_authz_error(topic.error_code) then denied = denied + 1 end
-  end
-  out.granted, out.denied = granted, denied
-  out.access = granted > 0 and "granted" or (denied > 0 and "denied" or "error")
+  w:stage("metadata_all", string.format("%s, %s", plural(#out.brokers, "broker"),
+    plural(#out.topics, "topic")))
   return out
 end
 
--- One name the cluster cannot possibly host, requested with the protocol's own
--- "do not create anything" flag. The error code that comes back separates three
--- very different clusters:
---   UNKNOWN_TOPIC_OR_PARTITION (3) -> the caller may ask, the name does not exist
---   TOPIC_AUTHORIZATION_FAILED (29) -> authorization happens before existence,
---                                      so the caller learned nothing about the
---                                      name but everything about the ACL model
---   INVALID_TOPIC_EXCEPTION (17) -> the name is rejected before either check
--- A topic that appears at all despite allow_auto_topic_creation=false is a
--- broker that ignores the flag, which is reported on its own.
-local function probe_name()
-  local seed = os.time() % 1000000
-  return string.format("nmap-metadata-probe-%d-%d", seed, math.random(1000, 9999))
+function probe.metadata_named(w, names, source_of)
+  if not names or #names == 0 then
+    return { skipped = "there was nothing in the listing to re-request" }
+  end
+  local version = w:version(3, METADATA_PREFERENCE)
+  w:flag("metadata.auto_create", false)
+  local result = w:call("metadata_named", function()
+    return kafka.metadata(w.connection, names, {
+      version = version,
+      auto_create = false,
+      topic_authorized_operations = true,
+    })
+  end)
+  if not result.ok then return { answered = false, error = result.error, requested = names } end
+  local by_name = {}
+  for _, topic in ipairs(result.topics or {}) do by_name[topic.name] = topic end
+  local out = { stage = "metadata_named", answered = true, version = version, requested = names,
+    by_name = by_name, topics = result.topics or {}, source_of = source_of or {} }
+  w:stage("metadata_named", string.format("%s re-requested by name", plural(#names, "topic")))
+  return out
 end
 
-function probe.metadata_unknown(w)
-  local name = probe_name()
+function probe.metadata_unknown(w, name)
+  if not name then return { skipped = "the unknown-name probe is disabled" } end
+  local version = w:version(3, METADATA_PREFERENCE)
+  w:flag("metadata.auto_create", false)
   local result = w:call("metadata_unknown", function()
     return kafka.metadata(w.connection, { name }, {
-      auto_create = false, cluster_authorized_operations = false,
-      topic_authorized_operations = false,
+      version = version,
+      auto_create = false,
+      topic_authorized_operations = true,
     })
   end)
-  if not result or not result.ok then
-    return { stage = "metadata_unknown", answered = false, requested = name,
-      error = result and result.error or "no response", version = result and result.version }
-  end
-  local entry = (result.topics or {})[1]
+  if not result.ok then return { answered = false, error = result.error, name = name } end
+  local topic = (result.topics or {})[1]
   local out = {
-    stage = "metadata_unknown", answered = true, version = result.version, requested = name,
-    error_code = entry and entry.error_code, error_name = entry and entry.error_name,
-    partitions = entry and #(entry.partitions or {}) or 0,
-    materialised = entry ~= nil and entry.error_code == 0,
+    stage = "metadata_unknown",
+    answered = true,
+    version = version,
+    name = name,
+    error_code = topic and topic.error_code,
+    error_name = topic and topic.error_name,
+    internal = topic and topic.is_internal,
+    partitions = topic and #(topic.partitions or {}) or 0,
+    entries = #(result.topics or {}),
   }
-  if out.materialised then
-    out.access = "created"
-  elseif kafka.is_authz_error(out.error_code) then
-    out.access = "denied"
-  else
-    out.access = "answered"
-  end
+  w:stage("metadata_unknown", string.format("%s -> %s", name, tostring(out.error_name or "no entry")))
   return out
 end
 
 function probe.describe_cluster(w)
+  local version = w:version(60, DESCRIBE_CLUSTER_PREFERENCE)
+  if not version then return { skipped = "the broker does not advertise DescribeCluster" } end
   local result = w:call("describe_cluster", function()
-    return kafka.describe_cluster(w.connection, { include_authorized_operations = true, endpoint_type = 1 })
+    return kafka.describe_cluster(w.connection, { version = version })
   end)
-  if not result or not result.ok then
-    return { stage = "describe_cluster", answered = false,
-      error = result and result.error or "no response", version = result and result.version }
+  if not result.ok then
+    return { answered = false, error = result.error, version = version }
   end
   local out = {
-    stage = "describe_cluster", answered = true, version = result.version,
-    error_code = result.error_code, error_name = result.error_name,
-    cluster_id = result.cluster_id, controller_id = result.controller_id,
-    endpoint_type = result.endpoint_type, brokers = result.brokers,
-    cluster_authorized_operations = result.cluster_authorized_operations,
+    stage = "describe_cluster",
+    answered = true,
+    version = version,
+    error_code = result.error_code,
+    error_name = result.error_name,
+    endpoint_type = result.endpoint_type,
+    cluster_id = result.cluster_id,
+    controller_id = result.controller_id,
+    brokers = result.brokers or {},
+    authorized_operations = result.authorized_operations,
+    is_fenced = result.is_fenced,
   }
-  out.access = (result.error_code == 0) and "granted" or "denied"
+  w:stage("describe_cluster", string.format("%s, controller %s", tostring(out.cluster_id or "no id"),
+    num_text(out.controller_id)))
   return out
 end
 
--- DescribeConfigs takes a list of resources: the script asks for the broker
--- itself and for a bounded number of topics. Broker-level settings are the ones
--- that reveal how much data can exist at once; topic-level settings are the ones
--- that reveal how long it is kept and how durable it has to be.
-function probe.describe_configs(w, broker_ids, topic_names)
-  local resources = {}
-  for _, broker_id in ipairs(broker_ids or {}) do
-    resources[#resources + 1] = { type = 4, name = num_text(broker_id) }
+function probe.describe_configs(w, resources, stage)
+  if not resources or #resources == 0 then
+    return { skipped = "there was no resource to read configs for" }
   end
-  local capped = 0
-  for _, name in ipairs(topic_names or {}) do
-    if capped >= probe.MAX_CONFIG_TOPICS then break end
-    resources[#resources + 1] = { type = 2, name = name }
-    capped = capped + 1
-  end
-  if #resources == 0 then
-    return { stage = "describe_configs", answered = true, skipped = "no resource to ask about", results = {} }
-  end
-  local result = w:call("describe_configs", function()
-    return kafka.describe_configs(w.connection, resources, { include_synonyms = true })
+  local version = w:version(32, DESCRIBE_CONFIGS_PREFERENCE)
+  if not version then return { skipped = "the broker does not advertise DescribeConfigs" } end
+  local result = w:call(stage or "describe_configs", function()
+    return kafka.describe_configs(w.connection, resources, {
+      version = version,
+      include_synonyms = true,
+      include_documentation = false,
+    })
   end)
-  if not result or not result.ok then
-    return { stage = "describe_configs", answered = false, requested = #resources,
-      error = result and result.error or "no response", version = result and result.version, results = {} }
+  if not result.ok then
+    return { answered = false, error = result.error, version = version, resources = resources }
+  end
+  local by_resource = {}
+  for _, row in ipairs(result.results or {}) do
+    by_resource[string.format("%s/%s", tostring(row.resource_type), tostring(row.resource_name))] = row
   end
   local out = {
-    stage = "describe_configs", answered = true, version = result.version,
-    results = result.results or {}, requested = #resources, throttle_ms = result.throttle_ms,
+    stage = stage or "describe_configs",
+    answered = true,
+    version = version,
+    resources = resources,
+    results = result.results or {},
+    by_resource = by_resource,
+    requested = #resources,
   }
-  local granted, denied, rows = 0, 0, 0
-  for _, resource in ipairs(out.results) do
-    if resource.error_code == 0 then
-      granted = granted + 1
-      rows = rows + #(resource.configs or {})
-    elseif kafka.is_authz_error(resource.error_code) then
-      denied = denied + 1
-    end
-  end
-  out.resources_answered, out.resources_denied, out.config_rows = granted, denied, rows
-  out.access = granted > 0 and "granted" or (denied > 0 and "denied" or "error")
+  w:stage(stage or "describe_configs", string.format("%s read", plural(#out.results, "resource")))
   return out
 end
 
--- The group count is not the subject of this script, but the offsets topic is
--- an internal topic like any other and its partition count is a broker setting
--- published to anyone who asks, so the corollary is worth stating exactly once.
 function probe.list_groups(w)
+  local version = w:version(16, 4)
+  if not version then return { skipped = "the broker does not advertise ListGroups" } end
   local result = w:call("list_groups", function()
-    return kafka.list_groups(w.connection)
+    return kafka.list_groups(w.connection, { version = version })
   end)
-  if not result or not result.ok then
-    return { stage = "list_groups", answered = false, groups = {},
-      error = result and result.error or "no response", version = result and result.version }
+  if not result.ok then return { answered = false, error = result.error, version = version } end
+  local states = {}
+  for _, group in ipairs(result.groups or {}) do
+    states[group.state or "unknown"] = (states[group.state or "unknown"] or 0) + 1
   end
   return {
-    stage = "list_groups", answered = true, version = result.version, groups = result.groups or {},
-    error_code = result.error_code, error_name = result.error_name,
-    access = #(result.groups or {}) > 0 and "granted"
-      or ((result.error_code and result.error_code ~= 0) and "denied" or "empty"),
+    stage = "list_groups",
+    answered = true,
+    version = version,
+    count = #(result.groups or {}),
+    groups = result.groups or {},
+    states = states,
+    error_code = result.error_code,
+    error_name = result.error_name,
   }
-end
-
-probe.MAX_CONFIG_TOPICS = 20
-
-
-----------------------------------------------------------------------------
--- 5. Analysis
-----------------------------------------------------------------------------
-
-local analysis = {}
-
--- Kafka's AclOperation enum, as the bitmask Metadata returns. The mask is not a
--- capability the caller holds: it is the set of operations that *could* be
--- granted on the resource, which is why the report prints it as an attribute of
--- the topic and never as a permission of the scanner.
-local ACL_OPS = {
-  { code = 1, name = "ANY" }, { code = 2, name = "ALL" }, { code = 3, name = "READ" },
-  { code = 4, name = "WRITE" }, { code = 5, name = "CREATE" }, { code = 6, name = "DELETE" },
-  { code = 7, name = "ALTER" }, { code = 8, name = "DESCRIBE" }, { code = 9, name = "CLUSTER_ACTION" },
-  { code = 10, name = "DESCRIBE_CONFIGS" }, { code = 11, name = "ALTER_CONFIGS" },
-  { code = 12, name = "IDEMPOTENT_WRITE" }, { code = 13, name = "CREATE_TOKENS" },
-  { code = 14, name = "DESCRIBE_TOKENS" },
-}
-
-function analysis.ops_text(mask)
-  if mask == nil then return "not returned by this broker version" end
-  if mask >= 2147483648 then mask = mask - 4294967296 end
-  if mask < 0 then return "not computed (the broker withheld the mask)" end
-  local names = {}
-  for _, op in ipairs(ACL_OPS) do
-    local weighted = 2 ^ op.code
-    if math.floor((mask / weighted) % 2) == 1 then names[#names + 1] = op.name end
-  end
-  if #names == 0 then return "none" end
-  return fmt_list(names, 10)
-end
-
--- The health of a topic is three separate numbers, and they mean different
--- things: an in-sync set smaller than the replica set is a durability problem,
--- an offline replica is a capacity problem, and an empty in-sync set is an
--- outage.
-function analysis.partition_health(topic)
-  local row = { partitions = 0, under_replicated = 0, offline = 0, no_leader = 0,
-    empty_isr = 0, replication_min = nil, replication_max = nil, isr_min = nil, leaders = {},
-    leader_epochs = {}, bad_partitions = {} }
-  for _, partition in ipairs(topic.partitions or {}) do
-    row.partitions = row.partitions + 1
-    local replicas = #(partition.replicas or {})
-    local isr = #(partition.isr or {})
-    local offline = #(partition.offline_replicas or {})
-    row.replication_min = (row.replication_min == nil) and replicas or math.min(row.replication_min, replicas)
-    row.replication_max = (row.replication_max == nil) and replicas or math.max(row.replication_max, replicas)
-    row.isr_min = (row.isr_min == nil) and isr or math.min(row.isr_min, isr)
-    if isr < replicas then row.under_replicated = row.under_replicated + 1 end
-    if offline > 0 then row.offline = row.offline + 1 end
-    if isr == 0 then row.empty_isr = row.empty_isr + 1 end
-    if partition.leader_id == nil or partition.leader_id < 0 then
-      row.no_leader = row.no_leader + 1
-    else
-      row.leaders[partition.leader_id] = (row.leaders[partition.leader_id] or 0) + 1
-    end
-    if partition.leader_epoch and partition.leader_epoch >= 0 then
-      row.leader_epochs[partition.leader_epoch] = true
-    end
-    if isr < replicas or offline > 0 or isr == 0 then
-      row.bad_partitions[#row.bad_partitions + 1] = string.format("%s/%s (replicas %s, isr %s, offline %s)",
-        tostring(topic.name), num_text(partition.index), fmt_list(partition.replicas, 6),
-        fmt_list(partition.isr, 6), fmt_list(partition.offline_replicas, 6))
-    end
-  end
-  return row
-end
-
-local INTERNAL_NOTES = {
-  ["__consumer_offsets"] = "the partition count of this topic is the cluster's group-coordinator count "
-    .. "(offsets.topic.num.partitions), and its partitions are the brokers that coordinate consumer groups",
-  ["__transaction_state"] = "its partition count is transaction.state.log.num.partitions, and its presence "
-    .. "says the cluster runs transactional producers",
-  ["__cluster_metadata"] = "a KRaft metadata log: this cluster is running without ZooKeeper",
-  ["_schemas"] = "the Confluent Schema Registry store: its content is the schema history of every topic",
-  ["connect-configs"] = "Kafka Connect configuration store: connector settings, including credentials",
-  ["connect-offsets"] = "Kafka Connect offset store: the position of every connector source",
-  ["connect-status"] = "Kafka Connect status store: which connectors are running",
-  ["__debezium-heartbeat"] = "a Debezium heartbeat topic: a change-data-capture pipeline is in place",
-  ["__amazon_msk_canary"] = "the MSK broker canary: the cluster runs on Amazon MSK",
-  ["__redhat_rhbk"] = "a Red Hat build of Kafka management topic",
-}
-
-local INTERNAL_PREFIXES = {
-  { prefix = "__", note = "reserved for internal topics on most distributions" },
-  { prefix = "_", note = "single-underscore names are used by the tooling around Kafka" },
-}
-
-local SENSITIVE_PATTERNS = {
-  { token = "payment", category = "payment" }, { token = "billing", category = "payment" },
-  { token = "invoice", category = "payment" }, { token = "card", category = "payment" },
-  { token = "pan", category = "payment" }, { token = "iban", category = "payment" },
-  { token = "customer", category = "identity" }, { token = "user", category = "identity" },
-  { token = "account", category = "identity" }, { token = "pii", category = "identity" },
-  { token = "profile", category = "identity" }, { token = "gdpr", category = "identity" },
-  { token = "health", category = "health" }, { token = "patient", category = "health" },
-  { token = "medical", category = "health" }, { token = "clinic", category = "health" },
-  { token = "hr", category = "human-resources" }, { token = "salary", category = "human-resources" },
-  { token = "payroll", category = "human-resources" }, { token = "employee", category = "human-resources" },
-  { token = "auth", category = "credentials" }, { token = "token", category = "credentials" },
-  { token = "secret", category = "credentials" }, { token = "credential", category = "credentials" },
-  { token = "session", category = "credentials" }, { token = "otp", category = "credentials" },
-  { token = "audit", category = "audit" }, { token = "security", category = "audit" },
-  { token = "compliance", category = "audit" }, { token = "fraud", category = "audit" },
-}
-
-local ENVIRONMENT_MARKERS = {
-  { token = "prod", note = "production" }, { token = "prd", note = "production" },
-  { token = "staging", note = "staging" }, { token = "stage", note = "staging" },
-  { token = "uat", note = "user acceptance testing" }, { token = "preprod", note = "pre-production" },
-  { token = "dev", note = "development" }, { token = "test", note = "testing" },
-  { token = "sandbox", note = "sandbox" },
-}
-
-function analysis.inventory(records, cfg)
-  local metadata = records.metadata_all or {}
-  local topics = metadata.topics or {}
-  local out = {
-    rows = {}, listed = 0, shown = 0, internal = 0, user = 0, with_error = 0,
-    partitions = 0, replicas = 0, replication_histogram = {}, leader_load = {},
-    topic_ids = {}, epochs = {}, unhealthy = {}, truncated = false,
-    under_replicated = 0, offline = 0, empty_isr = 0, no_leader = 0,
-  }
-  for index, topic in ipairs(topics) do
-    out.listed = out.listed + 1
-    if topic.error_code and topic.error_code ~= 0 then
-      out.with_error = out.with_error + 1
-    end
-    if index > cfg.max_topics then
-      out.truncated = true
-    else
-      local health = analysis.partition_health(topic)
-      local row = {
-        name = topic.name, is_internal = topic.is_internal,
-        error_code = topic.error_code, error_name = topic.error_name,
-        partition_count = health.partitions, replication_min = health.replication_min,
-        replication_max = health.replication_max, isr_min = health.isr_min,
-        under_replicated = health.under_replicated, offline = health.offline,
-        empty_isr = health.empty_isr, no_leader = health.no_leader,
-        leaders = health.leaders, leader_epochs = health.leader_epochs,
-        topic_id = topic.topic_id, authorized_operations = topic.authorized_operations,
-        bad_partitions = health.bad_partitions, health = health,
-        internal_note = topic.is_internal and INTERNAL_NOTES[topic.name] or nil,
-      }
-      if topic.topic_id and #topic.topic_id > 0 then
-        out.topic_ids[hex_bytes(topic.topic_id)] = topic.name
-      end
-      for epoch in pairs(health.leader_epochs or {}) do out.epochs[epoch] = true end
-      for leader, count in pairs(health.leaders or {}) do
-        out.leader_load[leader] = (out.leader_load[leader] or 0) + count
-      end
-      out.partitions = out.partitions + health.partitions
-      if row.replication_max then
-        out.replicas = out.replicas + (row.replication_max * health.partitions)
-        local key = num_text(row.replication_max)
-        out.replication_histogram[key] = (out.replication_histogram[key] or 0) + health.partitions
-      end
-      out.under_replicated = out.under_replicated + health.under_replicated
-      out.offline = out.offline + health.offline
-      out.empty_isr = out.empty_isr + health.empty_isr
-      out.no_leader = out.no_leader + health.no_leader
-      if topic.is_internal then out.internal = out.internal + 1 else out.user = out.user + 1 end
-      if health.bad_partitions[1] or (topic.error_code and topic.error_code ~= 0) then
-        out.unhealthy[#out.unhealthy + 1] = row
-      end
-      out.rows[#out.rows + 1] = row
-      out.shown = out.shown + 1
-    end
-  end
-  out.brokers = metadata.brokers or {}
-  out.cluster_id = metadata.cluster_id
-  out.controller_id = metadata.controller_id
-  out.racks = {}
-  for _, broker in ipairs(out.brokers) do
-    if broker.rack then out.racks[broker.rack] = (out.racks[broker.rack] or 0) + 1 end
-  end
-  return out
-end
-
--- The naming analysis works on the exact strings the broker returned: a topic
--- name is chosen by whoever created the topic, and it is the only part of the
--- metadata that describes the business rather than the deployment.
-function analysis.naming(inventory, cfg)
-  local patterns = {}
-  for _, entry in ipairs(SENSITIVE_PATTERNS) do patterns[#patterns + 1] = entry end
-  for _, token in ipairs(cfg.patterns or {}) do
-    patterns[#patterns + 1] = { token = token, category = "operator-supplied" }
-  end
-  local out = { matches = {}, categories = {}, environments = {}, internal_by_prefix = {} }
-  for _, row in ipairs(inventory.rows or {}) do
-    local lower = string.lower(row.name or "")
-    for _, entry in ipairs(patterns) do
-      if lower:find(entry.token, 1, true) then
-        out.matches[#out.matches + 1] = {
-          topic = row.name, token = entry.token, category = entry.category,
-          partitions = row.partition_count, internal = row.is_internal,
-        }
-        out.categories[entry.category] = (out.categories[entry.category] or 0) + 1
-        break
-      end
-    end
-    for _, entry in ipairs(ENVIRONMENT_MARKERS) do
-      if lower:find(entry.token, 1, true) then
-        out.environments[row.name] = entry.note
-        break
-      end
-    end
-    for _, entry in ipairs(INTERNAL_PREFIXES) do
-      if string.sub(lower, 1, #entry.prefix) == entry.prefix then
-        out.internal_by_prefix[entry.prefix] = out.internal_by_prefix[entry.prefix] or { topics = {}, note = entry.note }
-        out.internal_by_prefix[entry.prefix].topics[#out.internal_by_prefix[entry.prefix].topics + 1] = row.name
-        break
-      end
-    end
-  end
-  return out
-end
-
--- Configuration rows are interpreted, not merely printed: a retention of seven
--- days on a topic with twenty-four partitions is a statement about how much
--- data the cluster is expected to hold, and min.insync.replicas=1 on a topic
--- with replication factor three is a statement about what happens when a
--- broker dies.
-local CAPACITY_KEYS = {
-  { name = "retention.ms", kind = "duration",
-    meaning = "how long a record stays readable after it is written" },
-  { name = "retention.bytes", kind = "bytes", meaning = "how much data a partition may hold" },
-  { name = "segment.bytes", kind = "bytes", meaning = "the size of one log segment" },
-  { name = "segment.ms", kind = "duration", meaning = "how often a segment is rolled" },
-  { name = "cleanup.policy", kind = "text", meaning = "whether records are deleted or compacted" },
-  { name = "min.insync.replicas", kind = "count",
-    meaning = "how many replicas must acknowledge a write when the producer asks for acks=all" },
-  { name = "max.message.bytes", kind = "bytes", meaning = "the largest record the broker accepts" },
-  { name = "unclean.leader.election.enable", kind = "flag",
-    meaning = "whether an out-of-sync replica may become leader and lose data" },
-  { name = "compression.type", kind = "text", meaning = "the effective compression of the log" },
-  { name = "message.timestamp.type", kind = "text", meaning = "whether the broker or the producer stamps time" },
-  { name = "auto.create.topics.enable", kind = "flag",
-    meaning = "whether naming a topic that does not exist creates it" },
-  { name = "num.partitions", kind = "count", meaning = "the partition count of an auto-created topic" },
-  { name = "default.replication.factor", kind = "count",
-    meaning = "the replication factor of an auto-created topic" },
-  { name = "offsets.topic.num.partitions", kind = "count",
-    meaning = "the partition count of __consumer_offsets, which is the group-coordinator count" },
-  { name = "transaction.state.log.num.partitions", kind = "count",
-    meaning = "the partition count of __transaction_state" },
-  { name = "log.dirs", kind = "text", meaning = "the filesystem layout of the broker" },
-  { name = "listeners", kind = "text", meaning = "the endpoints the broker binds" },
-  { name = "advertised.listeners", kind = "text", meaning = "the endpoints the broker hands to clients" },
-  { name = "authorizer.class.name", kind = "text",
-    meaning = "which authorizer, if any, is loaded on this broker" },
-  { name = "ssl.client.auth", kind = "text", meaning = "whether clients must present a certificate" },
-}
-
-local CAPACITY_INDEX = {}
-for _, entry in ipairs(CAPACITY_KEYS) do CAPACITY_INDEX[entry.name] = entry end
-
-local function human_bytes(value)
-  local number = tonumber(value)
-  if not number or number < 0 then return tostring(value) end
-  local units = { { "TiB", 1099511627776 }, { "GiB", 1073741824 }, { "MiB", 1048576 }, { "KiB", 1024 } }
-  for _, unit in ipairs(units) do
-    if number >= unit[2] then return string.format("%.1f %s", number / unit[2], unit[1]) end
-  end
-  return num_text(number) .. " B"
-end
-
-local function human_duration(value)
-  local number = tonumber(value)
-  if not number or number < 0 then return tostring(value) end
-  if number == 0 then return "no expiry" end
-  local units = { { "d", 86400000 }, { "h", 3600000 }, { "m", 60000 }, { "s", 1000 } }
-  for _, unit in ipairs(units) do
-    if number >= unit[2] and number % unit[2] == 0 then
-      return string.format("%d%s", number / unit[2], unit[1])
-    end
-  end
-  return num_text(number) .. "ms"
-end
-
-function analysis.capacity(records, cfg)
-  local describe = records.describe_configs or {}
-  local out = {
-    resources = {}, broker = {}, topics = {}, sensitive = {}, notable = {},
-    answered = describe.answered, version = describe.version, rows = describe.config_rows or 0,
-    resources_answered = describe.resources_answered or 0,
-    resources_denied = describe.resources_denied or 0, skipped = describe.skipped,
-    error = describe.error,
-  }
-  for _, resource in ipairs(describe.results or {}) do
-    local entry = {
-      name = resource.resource_name, type = resource.resource_type,
-      error_code = resource.error_code, error_name = resource.error_name,
-      configs = resource.configs or {},
-    }
-    out.resources[#out.resources + 1] = entry
-    local bucket = (resource.resource_type_code == 4) and out.broker or out.topics
-    for _, config in ipairs(entry.configs) do
-      local value = config.value
-      local rendered = value
-      if value ~= nil then
-        local meta = CAPACITY_INDEX[config.name]
-        if meta and meta.kind == "bytes" then rendered = human_bytes(value)
-        elseif meta and meta.kind == "duration" then rendered = human_duration(value) end
-      end
-      local row = {
-        resource = entry.name, resource_type = entry.type, name = config.name, value = value,
-        rendered = rendered, source = config.source, source_code = config.source_code,
-        read_only = config.read_only, is_sensitive = config.is_sensitive,
-        secret_bearing = config.secret_bearing, documentation = config.documentation,
-        synonyms = config.synonyms,
-      }
-      local meta = CAPACITY_INDEX[config.name]
-      if meta then row.meaning = meta.meaning end
-      -- A value that came from a dynamic source was set by an operator; a value
-      -- from DEFAULT_CONFIG is Kafka's own default.
-      row.operator_set = config.source == "DYNAMIC_TOPIC_CONFIG" or config.source == "DYNAMIC_BROKER_CONFIG"
-        or config.source == "DYNAMIC_DEFAULT_BROKER_CONFIG" or config.source == "STATIC_BROKER_CONFIG"
-      if row.is_sensitive or (config.secret_bearing and not row.read_only) then
-        row.redacted = true
-        out.sensitive[#out.sensitive + 1] = row
-      end
-      if meta or row.operator_set or row.is_sensitive then
-        bucket[#bucket + 1] = row
-      end
-      out.notable[#out.notable + 1] = row
-    end
-  end
-  -- The two derived numbers the findings quote: how many partitions the cluster
-  -- reports in total, and whether anything enforces durability.
-  out.insync_values = {}
-  for _, row in ipairs(out.notable) do
-    if row.name == "min.insync.replicas" then out.insync_values[#out.insync_values + 1] = row end
-  end
-  out.auto_create = nil
-  for _, row in ipairs(out.notable) do
-    if row.name == "auto.create.topics.enable" then out.auto_create = row.value end
-    if row.name == "num.partitions" then out.num_partitions = row.value end
-    if row.name == "default.replication.factor" then out.default_replication_factor = row.value end
-    if row.name == "authorizer.class.name" then out.authorizer = row.value end
-    if row.name == "ssl.client.auth" then out.client_auth = row.value end
-  end
-  return out
-end
-
--- The authorization boundary: what the caller saw when it asked for everything,
--- and what it saw when it asked for one name at a time.
-function analysis.boundary(records, inventory)
-  local by_name = records.metadata_by_name or {}
-  local out = { listed = {}, refused_by_name = {}, hidden_by_name = {}, masks = {},
-    inconsistent = false, listed_but_refused = 0, unlisted_but_described = 0, denied_by_name = {} }
-  for _, row in ipairs(inventory.rows or {}) do
-    out.listed[row.name] = true
-    if row.authorized_operations ~= nil then
-      out.masks[#out.masks + 1] = { name = row.name, mask = row.authorized_operations,
-        text = analysis.ops_text(row.authorized_operations) }
-    end
-  end
-  for _, topic in ipairs(by_name.topics or {}) do
-    if topic.error_code and topic.error_code ~= 0 then
-      if kafka.is_authz_error(topic.error_code) then
-        out.denied_by_name[#out.denied_by_name + 1] = { name = topic.name,
-          error_name = topic.error_name, listed = out.listed[topic.name] == true }
-      end
-      if out.listed[topic.name] then
-        out.listed_but_refused = out.listed_but_refused + 1
-        out.refused_by_name[#out.refused_by_name + 1] = string.format("%s (%s)", tostring(topic.name),
-          tostring(topic.error_name))
-      end
-      out.inconsistent = true
-    elseif not out.listed[topic.name] then
-      out.unlisted_but_described = out.unlisted_but_described + 1
-      out.hidden_by_name[#out.hidden_by_name + 1] = topic.name
-    elseif topic.authorized_operations ~= nil then
-      out.masks[#out.masks + 1] = { name = topic.name, mask = topic.authorized_operations,
-        text = analysis.ops_text(topic.authorized_operations), source = "named request" }
-    end
-  end
-  return out
-end
-
-function analysis.exposure(records)
-  local rows = {}
-  local function add(name, record, detail)
-    if not record then return end
-    rows[#rows + 1] = {
-      name = name, access = record.answered == false and "unanswered" or (record.access or "unknown"),
-      version = record.version, detail = detail, error_name = record.error_name,
-      record = record,
-    }
-  end
-  local metadata = records.metadata_all or {}
-  add("ApiVersions", records.negotiate, records.negotiate and records.negotiate.answered
-    and plural(records.negotiate.api_count or 0, "API") or nil)
-  add("Metadata (all topics)", metadata, metadata.answered
-    and (plural(metadata.topics_with_data or 0, "topic") .. " with data") or nil)
-  add("Metadata (by name)", records.metadata_by_name, records.metadata_by_name and records.metadata_by_name.answered
-    and (records.metadata_by_name.skipped or (plural(records.metadata_by_name.granted or 0, "topic") .. " granted"))
-    or nil)
-  add("Metadata (unknown name)", records.metadata_unknown, records.metadata_unknown and records.metadata_unknown.answered
-    and (tostring(records.metadata_unknown.error_name) .. " for a name that cannot exist") or nil)
-  add("DescribeCluster", records.describe_cluster, records.describe_cluster and records.describe_cluster.answered
-    and ("cluster id " .. tostring(records.describe_cluster.cluster_id or "withheld")) or nil)
-  add("DescribeConfigs", records.describe_configs, records.describe_configs and records.describe_configs.answered
-    and (records.describe_configs.skipped or plural(records.describe_configs.config_rows or 0, "configuration value"))
-    or nil)
-  add("ListGroups", records.list_groups, records.list_groups and records.list_groups.answered
-    and plural(#((records.list_groups or {}).groups or {}), "group") or nil)
-  -- An empty listing is ambiguous on its own: a cluster with no topics and a
-  -- cluster that filtered every topic away both answer nothing. The second
-  -- DescribeCluster answer disambiguates it, because an authorizer that filters
-  -- Metadata also refuses the cluster-level read.
-  local metadata = records.metadata_all or {}
-  local cluster = records.describe_cluster or {}
-  if metadata.answered and (metadata.access == "empty" or metadata.access == "filtered")
-    and cluster.access == "denied" then
-    local filtered = true
-    for _, row in ipairs(rows) do
-      if row.name == "Metadata (all topics)" then row.access = "filtered" row.filtered = filtered end
-    end
-  end
-  local granted, denied, unanswered = 0, 0, 0
-  for _, row in ipairs(rows) do
-    if row.access == "granted" or row.access == "answered" then granted = granted + 1
-    elseif row.access == "denied" or row.access == "error" then denied = denied + 1
-    elseif row.access == "unanswered" then unanswered = unanswered + 1 end
-  end
-  return { rows = rows, granted = granted, denied = denied, unanswered = unanswered }
 end
 
 
 ----------------------------------------------------------------------------
--- 6. Knowledge base
+-- 5. Knowledge base
 ----------------------------------------------------------------------------
 
 local KB = {}
 
-KB.REMEDIATION = {
-  {
-    step = "Require authentication on every client listener: set 'listener.name.<LISTENER>.sasl.enabled.mechanisms' "
-      .. "and 'listener.name.<LISTENER>.plain.sasl.jaas.config' (or the SCRAM/Kerberos equivalent) so a client "
-      .. "must authenticate before KafkaApis handles Metadata.",
-    why = "Metadata is answered before any authorization check runs, so it is the SASL exchange and not the "
-      .. "ACL that decides whether an unauthenticated caller sees the topic list at all.",
-  },
-  {
-    step = "Attach ACLs to the topics that must stay invisible: "
-      .. "'kafka-acls.sh --add --allow-principal User:<svc> --operation Read --topic <name>' and, just as "
-      .. "important, grant DESCRIBE only where it is needed, because a caller without DESCRIBE on a topic is "
-      .. "not supposed to see it in a listing either.",
-    why = "Metadata listing is filtered by DESCRIBE permission on the topic resource; a cluster with no ACLs "
-      .. "publishes every topic to every principal, and a cluster with ACLs on the wrong resource publishes "
-      .. "them anyway.",
-  },
-  {
-    step = "Disable anonymous access for admin APIs by removing 'allow.everyone.if.no.acl.found=true' (the "
-      .. "default is false on brokers with an authorizer loaded, and true in many hand-written configurations) "
-      .. "and by setting 'authorizer.class.name' explicitly.",
-    why = "The setting decides what an ACL-less request means: with it true, a request nobody wrote an ACL for "
-      .. "is allowed, which is exactly the state this report describes.",
-  },
-  {
-    step = "Restrict DescribeConfigs at the broker resource: grant DESCRIBE_CONFIGS only to operators, and "
-      .. "keep broker-level configuration behind a separate listener.",
-    why = "Retention, message size, segment size and above all the credentials in a statically configured "
-      .. "broker tell a reader how much data exists, how long it is kept and how to reach the keystore.",
-  },
-  {
-    step = "Set 'auto.create.topics.enable=false' and 'num.partitions'/'default.replication.factor' explicitly "
-      .. "so topic creation is an administrative action rather than a side effect of a client typo.",
-    why = "Auto-creation turns any name a client asks about into a real topic, which both pollutes the cluster "
-      .. "and hands a scanner an existence oracle.",
-  },
-  {
-    step = "Raise durability settings where the probe found weak ones: 'min.insync.replicas=2' with "
-      .. "replication factor 3, 'unclean.leader.election.enable=false', and no topic left with a single "
-      .. "replica.",
-    why = "The health findings are not access findings, but they are read from the same unauthenticated "
-      .. "response, and a cluster that publishes an unhealthy topology to everyone is also the cluster that "
-      .. "loses data when the wrong broker fails.",
-  },
+-- Which subsystems an internal topic proves are deployed, and what the
+-- exposure of its name and shape means. The list is deliberately factual: each
+-- entry names the component that owns the topic, because "an internal topic is
+-- visible" is only actionable once the operator knows what runs on the cluster.
+KB.INTERNAL_TOPICS = {
+  { name = "__consumer_offsets",
+    component = "the group coordinator",
+    proves = "consumer groups are in use; the partition count is "
+      .. "offsets.topic.num.partitions, so the count in this report is the configured one",
+    impact = "the committed offset of every consumer group lives here; the topic also records group "
+      .. "membership, so its contents describe which applications consume which topics" },
+  { name = "__transaction_state",
+    component = "the transaction coordinator",
+    proves = "transactional producers are in use (an idempotent or exactly-once pipeline)",
+    impact = "transaction metadata including the transactional ids, which name the producing "
+      .. "applications and their partitions" },
+  { name = "_schemas",
+    component = "Confluent Schema Registry",
+    proves = "schemas are validated centrally, so this cluster carries the contract for every producer",
+    impact = "the schema names are the data model: field names, types and compatibility history for "
+      .. "every stream in the deployment" },
+  { name = "__cluster_metadata",
+    component = "the KRaft controller",
+    proves = "the cluster runs without ZooKeeper; the metadata log is the cluster's own state",
+    impact = "this topic is the configuration of the cluster itself, which is why it is only ever "
+      .. "hosted by controllers and never by an ordinary broker" },
+  { name = "connect-configs",
+    component = "Kafka Connect",
+    proves = "managed connectors are deployed, so the cluster moves data in and out of other systems",
+    impact = "connector configuration includes the credentials the connector uses for its source or "
+      .. "sink, which makes this the highest-value topic name in the list" },
+  { name = "connect-offsets",
+    component = "Kafka Connect",
+    proves = "connectors checkpoint their position in this cluster",
+    impact = "the keys are source partitions of the external system, which describes what is being "
+      .. "replicated" },
+  { name = "connect-status",
+    component = "Kafka Connect",
+    proves = "connector and task state is stored here",
+    impact = "connector names, task ids and failure messages" },
+  { name = "__debezium-heartbeat",
+    component = "Debezium",
+    proves = "change data capture is running against a database",
+    impact = "the heartbeat topic names the connector and confirms an ongoing database replication "
+      .. "stream" },
+  { name = "__amazon_msk_canary",
+    component = "Amazon MSK",
+    proves = "the cluster is managed by AWS MSK with its canary enabled",
+    impact = "the canary's topics and groups are visible, which identifies the account's monitoring "
+      .. "setup" },
+  { name = "_confluent-metrics",
+    component = "Confluent control plane",
+    proves = "Confluent telemetry is enabled",
+    impact = "reserved internal names for the control plane's own data" },
+  { name = "__strimzi",
+    component = "Strimzi topic operator",
+    proves = "Kafka is managed by the Strimzi operator on Kubernetes",
+    impact = "the operator's changelog topic names the KafkaTopic resources the cluster manages" },
+  { name = "__mirror",
+    component = "MirrorMaker 2",
+    proves = "the cluster is part of a replication topology",
+    impact = "the checkpoint topics describe which clusters replicate into and out of this one, and "
+      .. "the heartbeats topic describes the links that are alive" },
+  { name = "mm2-",
+    component = "MirrorMaker 2",
+    proves = "replication flows cross this cluster",
+    impact = "the topic names are the remote cluster aliases, so the naming reveals the topology" },
+  { name = "__nse",
+    component = "this script",
+    proves = "nothing: a name with this prefix should never exist, because the collection never "
+      .. "creates topics",
+    impact = "if it is present, another tool using this prefix created state on the cluster and the "
+      .. "report says so" },
 }
 
-KB.VERIFICATION = {
-  "kafka-topics.sh --bootstrap-server <broker> --list  (run without credentials: after the change this must "
-    .. "fail with an authentication error instead of printing the topic list)",
-  "kafka-configs.sh --bootstrap-server <broker> --describe --entity-type brokers --entity-name <id>  "
-    .. "(compare the values this script printed with what an operator sees)",
-  "kafka-acls.sh --bootstrap-server <broker> --list  (confirm that DESCRIBE is granted only where intended)",
-  "grep -E 'Anonymous|authenticated' <broker server.log>  (confirm the requests are now attributed to a "
-    .. "principal)",
-  "kafka-topics.sh --bootstrap-server <broker> --describe --topic <name>  (confirm the partition/replica "
-    .. "numbers this script reported)",
-  "nmap -p 9092 --script kafka-metadata-topic-leak <target>  (the same probe, expected to report 'denied' "
-    .. "rows in the access matrix)",
+KB.NAME_PATTERNS = {
+  { pattern = "payment", category = "financial", why = "payment and settlement traffic" },
+  { pattern = "billing", category = "financial", why = "invoices and billing events" },
+  { pattern = "invoice", category = "financial", why = "billing documents" },
+  { pattern = "ledger", category = "financial", why = "the accounting record of every movement" },
+  { pattern = "transaction", category = "financial", why = "transactional data, often the record of "
+    .. "money or state changes" },
+  { pattern = "order", category = "commercial", why = "customer orders, which combine identity and "
+    .. "purchase data" },
+  { pattern = "customer", category = "personal", why = "customer records" },
+  { pattern = "user", category = "personal", why = "user records or events" },
+  { pattern = "account", category = "personal", why = "accounts, which map a person to a service" },
+  { pattern = "identity", category = "personal", why = "identity data, the most sensitive personal "
+    .. "category" },
+  { pattern = "profile", category = "personal", why = "profile attributes" },
+  { pattern = "kyc", category = "personal", why = "know-your-customer verification data" },
+  { pattern = "ssn", category = "personal", why = "national identifiers" },
+  { pattern = "health", category = "special-category", why = "health data, protected in most "
+    .. "jurisdictions" },
+  { pattern = "patient", category = "special-category", why = "patient records" },
+  { pattern = "medical", category = "special-category", why = "medical data" },
+  { pattern = "payroll", category = "hr", why = "salaries and payroll" },
+  { pattern = "salary", category = "hr", why = "compensation data" },
+  { pattern = "employee", category = "hr", why = "employee records" },
+  { pattern = "hr", category = "hr", why = "human resources data" },
+  { pattern = "secret", category = "credential", why = "the name states that secrets flow through "
+    .. "the topic" },
+  { pattern = "credential", category = "credential", why = "credentials in the payload" },
+  { pattern = "password", category = "credential", why = "passwords, in a topic that may retain them" },
+  { pattern = "token", category = "credential", why = "tokens, which grant access while valid" },
+  { pattern = "apikey", category = "credential", why = "API keys" },
+  { pattern = "auth", category = "credential", why = "authentication events or material" },
+  { pattern = "audit", category = "audit", why = "the audit trail: who did what, and when" },
+  { pattern = "access-log", category = "audit", why = "access records" },
+  { pattern = "gdpr", category = "compliance", why = "data handled under a privacy regime" },
+  { pattern = "hipaa", category = "compliance", why = "data handled under a health regime" },
+  { pattern = "pci", category = "compliance", why = "card data in scope" },
+  { pattern = "backup", category = "copy", why = "a second copy of data that is expected to be "
+    .. "protected elsewhere" },
+  { pattern = "archive", category = "copy", why = "an archive, usually with a longer retention than "
+    .. "the source" },
+  { pattern = "prod", category = "environment", why = "a production topic, which the operator may "
+    .. "believe is not reachable from a staging network" },
+  { pattern = "staging", category = "environment", why = "a staging topic; staging often holds a copy "
+    .. "of production data with weaker controls" },
+  { pattern = "test", category = "environment", why = "a test topic on a real cluster" },
+  { pattern = "sandbox", category = "environment", why = "a sandbox with relaxed expectations" },
+  { pattern = "canary", category = "environment", why = "a probe topic; its presence also tells an "
+    .. "attacker which monitoring exists" },
 }
 
-KB.METHOD_LIMITS = {
-  "Metadata is answered from the broker's own metadata cache, so a topic whose creation is still propagating "
-    .. "may be missing from the listing and appear on a second run.",
-  "The script reads configuration but never writes it: DescribeConfigs is the only configuration API it "
-    .. "calls, and no request in this script carries a write, an alter or an incremental change.",
-  "DescribeConfigs is asked only for the broker resources and for at most "
-    .. "kafka.max-configs topics, because the API takes a resource list and the scan should not read the "
-    .. "configuration of a cluster it was pointed at once.",
-  "The unknown-name probe uses one randomly generated name and always sets allow_auto_topic_creation=false, so "
-    .. "on a broker that honours the flag nothing is created. A topic that appears anyway is reported, because "
-    .. "it means the flag was ignored.",
-  "Topic names are matched as lower-case substrings, so a name like 'panorama' matches the 'pan' pattern of the "
-    .. "payment category; the match is evidence of a naming convention, not of the content of the topic.",
-  "The authorized-operation mask is what the broker says could be granted on the resource. It is not the "
-    .. "permission of the caller that read it, and the report says so in every row that prints it.",
-  "A cluster behind a load balancer or an MSK-style endpoint answers Metadata for a subset of brokers, so the "
-    .. "replica sets can name node ids that the endpoint never advertises.",
+-- Broker settings whose value changes the exposure that the rest of the report
+-- describes. Each entry explains the value that matters, not just the name.
+KB.BROKER_CONFIG_INTEREST = {
+  { key = "allow.everyone.if.no.acl.found",
+    danger = "true",
+    why = "when no ACL matches a request the broker grants it, so an authenticated principal that "
+      .. "matches no ACL has full access to every resource" },
+  { key = "authorizer.class.name",
+    danger = "",
+    why = "an empty value means no authorizer is configured at all, so ACLs cannot be enforced even "
+      .. "if they were created" },
+  { key = "super.users",
+    danger = nil,
+    why = "names the principals that bypass every ACL; the value itself is the target list" },
+  { key = "sasl.enabled.mechanisms",
+    danger = "PLAIN",
+    why = "PLAIN sends the credential in the clear unless the listener is protected by TLS" },
+  { key = "ssl.keystore.location",
+    danger = nil,
+    why = "a filesystem path, which discloses the host layout and the file the key is read from" },
+  { key = "zookeeper.connect",
+    danger = nil,
+    why = "the ZooKeeper ensemble and chroot, which is the cluster's other control plane" },
+  { key = "controller.quorum.voters",
+    danger = nil,
+    why = "the KRaft controller quorum, which is the cluster's control plane in the newer mode" },
+  { key = "listeners",
+    danger = nil,
+    why = "the listener names and ports, which map the attack surface of the host" },
+  { key = "advertised.listeners",
+    danger = nil,
+    why = "the addresses clients are told to use, including internal hostnames" },
+  { key = "auto.create.topics.enable",
+    danger = "true",
+    why = "a broker that creates a topic on a metadata request lets any caller allocate names" },
+  { key = "unclean.leader.election.enable",
+    danger = "true",
+    why = "a partition can promote an out-of-sync replica, which silently loses acknowledged writes" },
+  { key = "min.insync.replicas",
+    danger = nil,
+    why = "the size of the write quorum a producer with acks=all depends on" },
+  { key = "offsets.topic.replication.factor",
+    danger = "1",
+    why = "a single replica of __consumer_offsets loses every group's position with one broker" },
+  { key = "transaction.state.log.replication.factor",
+    danger = "1",
+    why = "the same risk for the transaction coordinator's log" },
+  { key = "log.retention.hours",
+    danger = nil,
+    why = "how long records survive, which decides how much data a leak of the cluster exposes" },
+  { key = "background.threads",
+    danger = nil,
+    why = "a tuning value; reported because it is a cheap sample of what the config API returns" },
+  { key = "inter.broker.protocol.version",
+    danger = nil,
+    why = "the protocol generation, which dates the deployment" },
+  { key = "principal.builder.class",
+    danger = nil,
+    why = "a custom principal builder changes which principal an ACL names" },
+}
+
+-- Topic-level settings worth printing, with what each one decides.
+KB.TOPIC_CONFIG_INTEREST = {
+  { key = "retention.ms", why = "how long records stay: the window in which a leak is complete" },
+  { key = "retention.bytes", why = "the size cap, which decides how much a single topic can hold" },
+  { key = "segment.bytes", why = "the log segment size; together with the partition count it is the "
+    .. "storage a caller can allocate" },
+  { key = "segment.ms", why = "how often a segment rolls, which decides how quickly the retention "
+    .. "window is evaluated" },
+  { key = "cleanup.policy", why = "delete or compact; a compacted topic retains the latest value of "
+    .. "every key forever" },
+  { key = "min.insync.replicas", why = "the write quorum for acks=all producers" },
+  { key = "unclean.leader.election.enable", why = "per-topic permission to lose acknowledged writes" },
+  { key = "max.message.bytes", why = "the largest record accepted, which bounds what one write can "
+    .. "add to the log" },
+  { key = "message.timestamp.type", why = "whether the broker or the producer sets the timestamp, "
+    .. "which decides whether retention can be influenced by a client" },
+  { key = "compression.type", why = "the compression the broker applies to its own copies" },
+  { key = "delete.retention.ms", why = "how long tombstones persist on a compacted topic" },
+  { key = "leader.replication.throttled.replicas", why = "a throttle list, which names replicas" },
+  { key = "follower.replication.throttled.replicas", why = "a throttle list, which names replicas" },
+}
+
+KB.SENSITIVE_CONFIG_MARKERS = {
+  "password", "secret", "token", "apikey", "api.key", "private.key", "keystore", "truststore",
+  "sasl.jaas.config", "certificate", "credential", "oauth.client",
 }
 
 KB.RISK_RUBRIC = {
-  { severity = "CRITICAL", condition = "the full topic listing and the cluster/ topic configuration were both "
-    .. "answered without authentication, or a sensitive configuration value was returned in the clear" },
-  { severity = "HIGH", condition = "the listing is readable and either internal topics, sensitive names or "
-    .. "unhealthy replicas were in it" },
-  { severity = "MEDIUM", condition = "the listing is readable but no configuration and no internal topic was "
-    .. "exposed" },
-  { severity = "LOW", condition = "only the inventory was partial, or only non-sensitive attributes leaked" },
-  { severity = "INFO", condition = "the caller was refused, or nothing was answered" },
+  { severity = "CRITICAL", condition = "the listing is complete and unreserved, or the broker "
+    .. "disclosed a sensitive configuration value" },
+  { severity = "HIGH", condition = "the inventory exposes internal topology, secret-bearing topic "
+    .. "names, or the settings an attacker needs to plan against the cluster" },
+  { severity = "MEDIUM", condition = "the listing is partial but names the cluster's systems, or the "
+    .. "health picture is published without any topic data" },
+  { severity = "LOW", condition = "only broker topology or settings are visible" },
+  { severity = "INFO", condition = "the broker refuses, filters nothing, or does not answer" },
 }
 
-KB.ATTACK_VALUE = {
-  { exposure = "topic inventory",
-    value = "the list of business processes, one topic per pipeline, with the size of each one" },
-  { exposure = "internal topic partition counts",
-    value = "the group-coordinator count, whether transactions are used, and whether a schema registry or "
-      .. "connector cluster is attached" },
-  { exposure = "configuration values",
-    value = "how much data exists (retention x partitions), how it is compressed, and which keystore the "
-      .. "broker would use" },
-  { exposure = "replica topology",
-    value = "which hosts hold which data, and therefore which one to take down to make a partition "
-      .. "unavailable" },
-  { exposure = "authorization boundary",
-    value = "a map of which topics are protected and which are not, since a refusal is itself information "
-      .. "about the ACL model" },
-}
+----------------------------------------------------------------------------
+-- 6. Analysis
+----------------------------------------------------------------------------
+
+local analysis = {}
+
+-- The inventory is the same response the report prints, so the numbers in the
+-- findings and the numbers in the tables come from one pass over the data.
+function analysis.inventory(records, cfg)
+  local source = records.metadata_all or {}
+  local rows = {}
+  local metrics = {
+    topics = 0, user_topics = 0, internal_topics = 0, partitions = 0, replicas = 0,
+    under_replicated = 0, offline_replicas = 0, empty_isr = 0, unavailable = 0,
+    topic_errors = 0, leaders = {}, racks = {}, replication = {}, single_replica = 0,
+    partitions_without_leader = 0, topic_ids = 0, authorized_ops_present = 0,
+  }
+  if not source.answered then
+    return { rows = rows, metrics = metrics, answered = false, error = source.error }
+  end
+
+  for _, topic in ipairs(source.topics or {}) do
+    metrics.topics = metrics.topics + 1
+    if topic.is_internal then metrics.internal_topics = metrics.internal_topics + 1
+    else metrics.user_topics = metrics.user_topics + 1 end
+    if topic.error_code and topic.error_code ~= 0 then metrics.topic_errors = metrics.topic_errors + 1 end
+    if topic.topic_id then metrics.topic_ids = metrics.topic_ids + 1 end
+    if topic.authorized_operations ~= nil and topic.authorized_operations >= 0 then
+      metrics.authorized_ops_present = metrics.authorized_ops_present + 1
+    end
+
+    local replicas, under, offline, empty_isr, missing_leader = 0, 0, 0, 0, 0
+    for _, partition in ipairs(topic.partitions or {}) do
+      metrics.partitions = metrics.partitions + 1
+      local replica_count = #(partition.replicas or {})
+      replicas = replicas + replica_count
+      metrics.replicas = metrics.replicas + replica_count
+      metrics.replication[replica_count] = (metrics.replication[replica_count] or 0) + 1
+      if replica_count == 1 then metrics.single_replica = metrics.single_replica + 1 end
+      if #(partition.isr or {}) < replica_count then under = under + 1 end
+      if #(partition.isr or {}) == 0 then empty_isr = empty_isr + 1 end
+      offline = offline + #(partition.offline_replicas or {})
+      if partition.leader_id == nil or partition.leader_id < 0 then missing_leader = missing_leader + 1 end
+      if partition.leader_id and partition.leader_id >= 0 then
+        metrics.leaders[partition.leader_id] = (metrics.leaders[partition.leader_id] or 0) + 1
+      end
+    end
+    metrics.under_replicated = metrics.under_replicated + under
+    metrics.offline_replicas = metrics.offline_replicas + offline
+    metrics.empty_isr = metrics.empty_isr + empty_isr
+    metrics.partitions_without_leader = metrics.partitions_without_leader + missing_leader
+    if topic.error_code and topic.error_code ~= 0 then metrics.unavailable = metrics.unavailable + 1 end
+
+    rows[#rows + 1] = {
+      name = topic.name,
+      internal = topic.is_internal and true or false,
+      error_code = topic.error_code,
+      error_name = topic.error_name,
+      partitions = #(topic.partitions or {}),
+      replicas = replicas,
+      replication_factor = (#(topic.partitions or {}) > 0)
+        and #((topic.partitions[1] or {}).replicas or {}) or 0,
+      under_replicated = under,
+      offline_replicas = offline,
+      empty_isr = empty_isr,
+      partitions_without_leader = missing_leader,
+      topic_id = topic.topic_id and hex_bytes(topic.topic_id) or nil,
+      authorized_operations = topic.authorized_operations,
+      leaders = (function()
+        local set = {}
+        for _, partition in ipairs(topic.partitions or {}) do
+          if partition.leader_id and partition.leader_id >= 0 then set[partition.leader_id] = true end
+        end
+        return set
+      end)(),
+    }
+  end
+
+  for _, broker in ipairs(source.brokers or {}) do
+    if broker.rack and #tostring(broker.rack) > 0 then
+      metrics.racks[tostring(broker.rack)] = (metrics.racks[tostring(broker.rack)] or 0) + 1
+    end
+  end
+  -- The aggregate counters are kept next to the per-topic rows so a finding can
+  -- quote a cluster-wide number without walking the rows again.
+  for _, row in ipairs(rows) do
+    metrics.under_replicated = (metrics.under_replicated or 0) + row.under_replicated
+    metrics.offline_replicas_total = (metrics.offline_replicas_total or 0) + row.offline_replicas
+    metrics.empty_isr_total = (metrics.empty_isr_total or 0) + row.empty_isr
+    metrics.partitions_without_leader = (metrics.partitions_without_leader or 0)
+      + row.partitions_without_leader
+  end
+  table.sort(rows, function(a, b)
+    if a.internal ~= b.internal then return a.internal end
+    return tostring(a.name) < tostring(b.name)
+  end)
+  return { rows = rows, metrics = metrics, answered = true, version = source.version,
+    cluster_id = source.cluster_id, controller_id = source.controller_id,
+    brokers = source.brokers or {}, cluster_authorized_operations = source.cluster_authorized_operations }
+end
+
+-- Which internal subsystems are present, and therefore which parts of the
+-- deployment are described by the inventory.
+function analysis.internal(inventory)
+  local present, unknown = {}, {}
+  for _, row in ipairs(inventory.rows or {}) do
+    if row.internal then
+      local matched = nil
+      for _, entry in ipairs(KB.INTERNAL_TOPICS) do
+        if string.find(string.lower(row.name), string.lower(entry.name), 1, true) then
+          matched = entry
+          break
+        end
+      end
+      present[#present + 1] = { row = row, knowledge = matched }
+      if not matched then unknown[#unknown + 1] = row end
+    end
+  end
+  return { rows = present, unknown = unknown, count = #present }
+end
+
+-- The availability picture the broker publishes about itself.
+function analysis.health(inventory)
+  local metrics = inventory.metrics or {}
+  metrics.offline_replicas = metrics.offline_replicas_total or 0
+  metrics.empty_isr = metrics.empty_isr_total or 0
+  local skew = 0
+  local busiest = nil
+  for leader, count in pairs(metrics.leaders or {}) do
+    if count > skew then skew, busiest = count, leader end
+  end
+  local conditions = {}
+  if (metrics.under_replicated or 0) > 0 then
+    conditions[#conditions + 1] = string.format("%s under-replicated",
+      plural(metrics.under_replicated, "partition"))
+  end
+  if (metrics.offline_replicas or 0) > 0 then
+    conditions[#conditions + 1] = string.format("%s offline",
+      plural(metrics.offline_replicas, "replica"))
+  end
+  if (metrics.empty_isr or 0) > 0 then
+    conditions[#conditions + 1] = string.format("%s with an empty in-sync set",
+      plural(metrics.empty_isr, "partition"))
+  end
+  if (metrics.partitions_without_leader or 0) > 0 then
+    conditions[#conditions + 1] = string.format("%s without a leader",
+      plural(metrics.partitions_without_leader, "partition"))
+  end
+  if (metrics.single_replica or 0) > 0 then
+    conditions[#conditions + 1] = string.format("%s with a single replica",
+      plural(metrics.single_replica, "partition"))
+  end
+  return {
+    under_replicated = metrics.under_replicated or 0,
+    offline_replicas = metrics.offline_replicas or 0,
+    empty_isr = metrics.empty_isr or 0,
+    unavailable = metrics.unavailable or 0,
+    partitions_without_leader = metrics.partitions_without_leader or 0,
+    single_replica_partitions = metrics.single_replica or 0,
+    leader_skew = skew,
+    busiest_leader = busiest,
+    conditions = conditions,
+    racks = metrics.racks or {},
+    replication = metrics.replication or {},
+  }
+end
+
+-- Name patterns: what the topic names say about the data, before anything is
+-- read from them.
+function analysis.naming(inventory)
+  local matches, categories = {}, {}
+  for _, row in ipairs(inventory.rows or {}) do
+    local lowered = string.lower(tostring(row.name))
+    for _, entry in ipairs(KB.NAME_PATTERNS) do
+      if string.find(lowered, entry.pattern, 1, true) then
+        matches[#matches + 1] = { topic = row.name, pattern = entry.pattern,
+          category = entry.category, why = entry.why, internal = row.internal }
+        categories[entry.category] = (categories[entry.category] or 0) + 1
+      end
+    end
+  end
+  return { matches = matches, categories = categories, count = #matches }
+end
+
+-- The listing against the per-name answers, which is the test for whether the
+-- broker filters the listing per principal or only the requests.
+function analysis.boundary(records, inventory, cfg)
+  local named = records.metadata_named or {}
+  local out = {
+    requested = 0, described = 0, refused = 0, missing = 0, hidden = {}, refused_names = {},
+    rows = {}, full_listing = false,
+  }
+  if not named.answered then
+    out.skipped = named.skipped or named.error or "no per-name answer"
+    return out
+  end
+  local listing = {}
+  for _, row in ipairs(inventory.rows or {}) do listing[row.name] = row end
+  for _, name in ipairs(named.requested or {}) do
+    out.requested = out.requested + 1
+    local topic = named.by_name[name]
+    local row = { name = name, error_code = topic and topic.error_code,
+      error_name = topic and topic.error_name, partitions = topic and #(topic.partitions or {}) or 0 }
+    if not topic then
+      out.missing = out.missing + 1
+      row.verdict = "no-entry"
+    elseif row.error_code == 0 then
+      out.described = out.described + 1
+      row.verdict = "described"
+    elseif kafka.is_authz_error(row.error_code) then
+      out.refused = out.refused + 1
+      out.refused_names[#out.refused_names + 1] = name
+      row.verdict = "refused"
+    else
+      out.missing = out.missing + 1
+      row.verdict = "not-found"
+    end
+    out.rows[#out.rows + 1] = row
+  end
+  -- A topic that the wildcard listing hid but a direct request describes is the
+  -- strongest form of this finding: the listing is filtered, the data is not.
+  for _, row in ipairs(out.rows) do
+    if row.verdict == "described" and not listing[row.name] then
+      out.hidden[#out.hidden + 1] = row.name
+      row.source = (named.source_of or {})[row.name] or "supplied by the scan"
+      row.hidden = true
+    else
+      row.source = (named.source_of or {})[row.name] or "from the listing"
+    end
+  end
+  -- How many of the names came from the scan rather than from the listing: the
+  -- distinction matters, because only a supplied name can find a topic the
+  -- listing hid.
+  out.supplied = 0
+  for _, name in ipairs(named.requested or {}) do
+    if not listing[name] then out.supplied = out.supplied + 1 end
+  end
+  out.full_listing = out.requested > 0 and out.described == out.requested
+  return out
+end
+
+function analysis.unknown_probe(records, inventory, cfg)
+  local probe = records.metadata_unknown
+  local out = { ran = false, verdict = "not-run" }
+  if not probe or probe.skipped then
+    out.skipped = probe and probe.skipped or "the probe was not run"
+    return out
+  end
+  out.ran = true
+  out.name = probe.name
+  out.answered = probe.answered
+  out.error_code = probe.error_code
+  out.error_name = probe.error_name
+  out.entries = probe.entries
+  if probe.answered == false then
+    out.verdict = "unanswered"
+  elseif probe.entries and probe.entries > 0 and probe.error_code == 0 then
+    -- An entry with no error for a name that did not exist before is an
+    -- auto-created topic. That is reported separately, because it means the
+    -- probe allocated a topic rather than measured anything.
+    out.verdict = "created"
+    out.created = true
+  elseif kafka.is_authz_error(probe.error_code) then
+    out.verdict = "refused"
+  elseif probe.error_code == 3 then
+    out.verdict = "absent"
+  else
+    out.verdict = "other"
+  end
+  return out
+end
+
+-- Configuration exposure: broker settings that change the rest of the analysis,
+-- and topic settings that decide how much data a topic can hold.
+function analysis.configs(records, cfg)
+  local broker = records.configs_broker or {}
+  local topics = records.configs_topics or {}
+  local out = {
+    skipped = (not broker.answered and not topics.answered)
+      and (broker.skipped or topics.skipped or "DescribeConfigs was not answered") or nil,
+    broker_answered = broker.answered and true or false,
+    topic_answered = topics.answered and true or false,
+    broker_rows = {}, sensitive = {}, weak = {}, topic_rows = {},
+    topic_security = {}, set_by_operator = 0, sensitive_disclosed = 0,
+  }
+  local seen_broker = {}
+  for _, result in ipairs(broker.results or {}) do
+    for _, config in ipairs(result.configs or {}) do
+      local row = {
+        resource = result.resource_name, name = config.name, value = config.value,
+        sensitive = config.is_sensitive, read_only = config.read_only,
+        source = config.source, default = config.default,
+      }
+      if not seen_broker[config.name] then
+        seen_broker[config.name] = true
+        out.broker_rows[#out.broker_rows + 1] = row
+      end
+      if config.is_sensitive and config.value ~= nil and #tostring(config.value) > 0 then
+        out.sensitive_disclosed = out.sensitive_disclosed + 1
+        out.sensitive[#out.sensitive + 1] = row
+      end
+    end
+  end
+  for _, entry in ipairs(KB.BROKER_CONFIG_INTEREST) do
+    for _, row in ipairs(out.broker_rows) do
+      if row.name == entry.key then
+        local value = row.value == nil and "" or tostring(row.value)
+        local dangerous = entry.danger ~= nil and string.find(string.lower(value),
+          string.lower(entry.danger), 1, true) ~= nil
+        if entry.key == "authorizer.class.name" then
+          dangerous = #value == 0
+        end
+        if dangerous or entry.danger == nil then
+          out.weak[#out.weak + 1] = {
+            key = entry.key, value = value, dangerous = dangerous and true or false,
+            source = row.source, why = entry.why,
+          }
+        end
+        if row.source and string.find(tostring(row.source), "DYNAMIC", 1, true) then
+          out.set_by_operator = out.set_by_operator + 1
+        end
+      end
+    end
+  end
+  for _, result in ipairs(topics.results or {}) do
+    local row = { resource = result.resource_name, error_code = result.error_code,
+      error_name = result.error_name, configs = {}, security = {} }
+    for _, config in ipairs(result.configs or {}) do
+      row.configs[config.name] = config.value
+      if config.is_sensitive and config.value ~= nil and #tostring(config.value) > 0 then
+        out.sensitive_disclosed = out.sensitive_disclosed + 1
+        out.sensitive[#out.sensitive + 1] = { resource = result.resource_name, name = config.name,
+          value = config.value, sensitive = true, source = config.source }
+      end
+      local lowered = string.lower(config.name)
+      for _, marker in ipairs(KB.SENSITIVE_CONFIG_MARKERS) do
+        if string.find(lowered, marker, 1, true) then
+          row.security[#row.security + 1] = config.name
+        end
+      end
+    end
+    for _, entry in ipairs(KB.TOPIC_CONFIG_INTEREST) do
+      local value = row.configs[entry.key]
+      if value ~= nil then
+        out.topic_rows[#out.topic_rows + 1] = { topic = result.resource_name, key = entry.key,
+          value = value, why = entry.why }
+      end
+    end
+    out.topic_security[#out.topic_security + 1] = row
+  end
+  return out
+end
+
+-- The matrix the report prints: one row per API, with what the answer gave the
+-- caller.
+function analysis.exposure(records, inventory, boundary, configs, health, naming)
+  local rows = {}
+  local function row(name, access, version, detail)
+    rows[#rows + 1] = { name = name, access = access, version = version, detail = detail }
+  end
+  local negotiate = records.negotiate or {}
+  row("ApiVersions", negotiate.answered and "granted" or "unanswered", 0,
+    negotiate.answered and string.format("%s advertised", plural(negotiate.count or 0, "API"))
+      or tostring(negotiate.error))
+  local before = records.metadata_all or {}
+  row("Metadata (all topics)", before.answered and "granted" or "unanswered", before.version,
+    before.answered and string.format("%s, %s", plural(inventory.metrics.topics, "topic"),
+      plural(#(before.brokers or {}), "broker")) or tostring(before.error))
+  if boundary.skipped then
+    row("Metadata (by name)", "not-run", nil, boundary.skipped)
+  else
+    row("Metadata (by name)", boundary.described > 0 and "granted" or "refused", records.metadata_named.version,
+      string.format("%d of %s described", boundary.described, plural(boundary.requested, "name")))
+  end
+  local unknown = records.unknown or {}
+  if unknown.ran then
+    row("Metadata (random name)", unknown.verdict, unknown.error_name or "no code",
+      unknown.error_name or "no error code")
+  else
+    row("Metadata (random name)", "not-run", nil, unknown.skipped or "disabled")
+  end
+  local cluster = records.describe_cluster or {}
+  row("DescribeCluster", cluster.answered and "granted" or (cluster.skipped and "not-run" or "unanswered"),
+    cluster.version, cluster.answered and string.format("cluster %s, endpoint type %s",
+      tostring(cluster.cluster_id or "withheld"), tostring(cluster.endpoint_type or "-"))
+      or tostring(cluster.error or cluster.skipped))
+  row("DescribeConfigs (brokers)", configs.broker_answered and "granted" or "unanswered",
+    (records.configs_broker or {}).version,
+    configs.broker_answered and string.format("%s of broker settings", plural(#configs.broker_rows, "reading"))
+      or tostring((records.configs_broker or {}).error or (records.configs_broker or {}).skipped))
+  row("DescribeConfigs (topics)", configs.topic_answered and "granted" or "unanswered",
+    (records.configs_topics or {}).version,
+    configs.topic_answered and string.format("%s read", plural(#((records.configs_topics or {}).results or {}), "topic"))
+      or tostring((records.configs_topics or {}).error or (records.configs_topics or {}).skipped))
+  local groups = records.list_groups or {}
+  row("ListGroups", groups.answered and "granted" or (groups.skipped and "not-run" or "unanswered"),
+    groups.version, groups.answered and plural(groups.count or 0, "group") or tostring(groups.error or groups.skipped))
+  local granted = count_where(rows, function(item) return item.access == "granted" end)
+  return { rows = rows, granted = granted, total = #rows,
+    naming = naming, health = health }
+end
+
+-- The final safety check: the topic list was read before and after the probes,
+-- and the script never asked a broker to create anything.
+function analysis.safety(records, inventory_after, cfg)
+  local checks, failed = {}, 0
+  local function check(name, ok, detail)
+    checks[#checks + 1] = { name = name, ok = ok and true or false, detail = detail }
+    if not ok then failed = failed + 1 end
+  end
+  local before, after = records.metadata_all or {}, records.metadata_after or {}
+  check("no request allowed auto-creation", (records.auto_create_requests or 0) == 0,
+    string.format("%d Metadata requests set allow_auto_topic_creation", records.auto_create_requests or 0))
+  local delta = {}
+  if before.answered and after.answered then
+    local before_names, after_names = {}, {}
+    for _, topic in ipairs(before.topics or {}) do before_names[topic.name] = true end
+    for _, topic in ipairs(after.topics or {}) do after_names[topic.name] = true end
+    for name in pairs(after_names) do if not before_names[name] then delta[#delta + 1] = "+" .. name end end
+    for name in pairs(before_names) do if not after_names[name] then delta[#delta + 1] = "-" .. name end end
+    check("the topic list is identical before and after", #delta == 0,
+      #delta > 0 and table.concat(delta, ",") or "no difference")
+  else
+    check("the topic list is identical before and after", false,
+      "one of the two reads was not answered")
+  end
+  if records.unknown and records.unknown.created then
+    check("the random-name probe did not create a topic", false,
+      records.unknown.name .. " now exists: the broker ignored allow_auto_topic_creation=false")
+  end
+  -- A name may be re-requested for two reasons: it came from the listing, or the
+  -- operator supplied it (kafka.names) to test whether it is hidden. Anything
+  -- else would be a name the scan invented, and inventing names is how a probe
+  -- turns into an allocation.
+  local supplied = {}
+  for _, name in ipairs((cfg and cfg.names) or {}) do supplied[name] = true end
+  local probes = (records.metadata_named or {}).requested or {}
+  local unexpected = {}
+  for _, name in ipairs(probes) do
+    local listed = false
+    for _, topic in ipairs(inventory_after.rows or {}) do
+      if topic.name == name then listed = true end
+    end
+    if not listed and not supplied[name] then unexpected[#unexpected + 1] = name end
+  end
+  check("every re-requested name came from the listing or from the operator",
+    #unexpected == 0, #unexpected > 0 and table.concat(unexpected, ",")
+      or string.format("%s re-requested", plural(#probes, "name")))
+  return { checks = checks, failed = failed, delta = delta,
+    inventory_identical = #delta == 0 and before.answered and after.answered or false }
+end
 
 ----------------------------------------------------------------------------
 -- 7. Findings
@@ -1085,427 +1228,590 @@ KB.ATTACK_VALUE = {
 
 local findings = {}
 
-function findings.evaluate(records, inventory, naming, capacity, boundary, exposure, cfg)
+local function topic_sample(rows, limit, formatter)
+  local out = {}
+  for index = 1, math.min(#rows, limit or 6) do
+    out[#out + 1] = formatter(rows[index])
+  end
+  if #rows > (limit or 6) then out[#out + 1] = string.format("(+%d more)", #rows - (limit or 6)) end
+  return out
+end
+
+-- A config value that a broker marked sensitive is only reported when the broker
+-- actually sent it: an empty or absent value for a sensitive key means the
+-- broker behaved correctly, and the difference matters for the finding.
+local function sensitive_evidence(configs, limit)
+  local out = {}
+  for index = 1, math.min(#configs.sensitive, limit or 6) do
+    local row = configs.sensitive[index]
+    out[#out + 1] = string.format("%s.%s = %s", tostring(row.resource), tostring(row.name),
+      tostring(row.value))
+  end
+  return out
+end
+
+function findings.evaluate(records, inventory, internal, health, naming, boundary, unknown, configs, exposure, safety, cfg)
   local list = {}
-  local metadata = records.metadata_all or {}
+  local negotiate = records.negotiate or {}
+  local metrics = inventory.metrics or {}
 
-  -- 1. The listing itself.
-  if metadata.answered and inventory.shown > 0 then
-    local evidence = {
-      string.format("topics: %d (%d internal, %d user)", inventory.shown, inventory.internal, inventory.user),
-      string.format("partitions: %d, replicas: %d", inventory.partitions, inventory.replicas),
-      string.format("brokers in the answer: %d, racks: %d", #(inventory.brokers or {}),
-        count_of(inventory.racks)),
-      string.format("topic ids returned: %d, leader epochs seen: %d", count_of(inventory.topic_ids),
-        count_of(inventory.epochs)),
-    }
-    local severity = (#(inventory.rows) > 0) and "CRITICAL" or "MEDIUM"
-    list[#list + 1] = finding("KAFKA-TOPIC-INVENTORY-DISCLOSURE",
-      "The complete topic inventory is published without authentication",
-      severity,
-      string.format("Metadata answered a full listing to a caller that never authenticated: %s, %s and %s, "
-        .. "with the leader, the replica set, the in-sync set and the offline set of every partition. The "
-        .. "listing is the cluster's business model: one topic per process, and the partition count of each "
-        .. "one is a measure of how much work that process does. Nothing in the answer distinguishes a "
-        .. "scanner from a legitimate client.",
-        plural(inventory.shown, "topic"), plural(inventory.partitions, "partition"),
-        plural(inventory.replicas, "replica placement")),
-      evidence, { KB.REMEDIATION[1], KB.REMEDIATION[2], KB.REMEDIATION[3] })
-  end
-
-  -- 2. Internal topics: each of them names a subsystem.
-  local internal_rows = {}
-  for _, row in ipairs(inventory.rows or {}) do
-    if row.is_internal then
-      internal_rows[#internal_rows + 1] = string.format("%s: %s%s", row.name,
-        plural(row.partition_count, "partition"),
-        row.internal_note and (" - " .. row.internal_note) or "")
-    end
-  end
-  if #internal_rows > 0 then
-    list[#list + 1] = finding("KAFKA-INTERNAL-TOPIC-EXPOSURE",
-      "Internal topics are exposed with their topology",
-      (metadata.answered and metadata.access == "granted") and "HIGH" or "MEDIUM",
-      string.format("%s were visible. Internal topics are not data: they are the cluster's own bookkeeping, "
-        .. "and their names and partition counts describe which subsystems are attached and how they are "
-        .. "sized. __consumer_offsets in particular publishes the number of group coordinators, which is a "
-        .. "capacity fact an attacker uses to judge how much of the cluster a group-level denial of service "
-        .. "would take down.", plural(#internal_rows, "internal topic")),
-      internal_rows, { KB.REMEDIATION[2], KB.REMEDIATION[3] })
-  end
-
-  -- 3. Configuration.
-  if capacity.answered and (capacity.resources_answered or 0) > 0 then
+  if safety.failed > 0 then
     local evidence = {}
-    for _, row in ipairs(capacity.notable or {}) do
-      if #evidence < 12 then
-        evidence[#evidence + 1] = string.format("%s[%s] %s=%s (%s)", tostring(row.resource),
-          tostring(row.resource_type), tostring(row.name), tostring(row.rendered),
-          tostring(row.source or "source unknown"))
-      end
+    for _, check in ipairs(safety.checks) do
+      if not check.ok then evidence[#evidence + 1] = string.format("%s: %s", check.name, tostring(check.detail)) end
     end
-    list[#list + 1] = finding("KAFKA-TOPIC-CONFIG-DISCLOSURE",
-      "Broker and topic configuration is readable without authentication",
-      "HIGH",
-      string.format("DescribeConfigs answered %s over %s. The values are operational: retention says how long "
-        .. "a record can be read after it was written, retention.bytes and segment.bytes say how much data a "
-        .. "partition is expected to hold, min.insync.replicas says whether a write survives a broker loss, "
-        .. "and the listener and log.dirs values describe the deployment itself. Together they are the "
-        .. "capacity model of the cluster.",
-        plural(capacity.rows or 0, "configuration value"), plural(capacity.resources_answered or 0, "resource")),
-      evidence, { KB.REMEDIATION[4] })
-  elseif capacity.answered and capacity.skipped then
-    list[#list + 1] = finding("KAFKA-CONFIG-READ-NOT-ATTEMPTED",
-      "Configuration was not read", "INFO", tostring(capacity.skipped), {}, { KB.REMEDIATION[4] })
-  elseif (records.describe_configs or {}).answered == false then
-    list[#list + 1] = finding("KAFKA-CONFIG-READ-DENIED",
-      "DescribeConfigs was refused to the unauthenticated caller",
-      "INFO",
-      string.format("DescribeConfigs did not answer (%s). The API is ACL-checked for DESCRIBE_CONFIGS on "
-        .. "each resource, so a refusal here while Metadata is open means the authorizer knows about the "
-        .. "resource but the metadata path is not filtered the same way.",
-        tostring((records.describe_configs or {}).error)), {}, { KB.REMEDIATION[2] })
-  end
-
-  -- 4. Secrets in configuration.
-  if #(capacity.sensitive or {}) > 0 then
-    local rows = {}
-    for index = 1, math.min(#capacity.sensitive, 8) do
-      local row = capacity.sensitive[index]
-      local shown = row.value
-      if row.value and #tostring(row.value) > 64 then shown = string.sub(tostring(row.value), 1, 61) .. "..." end
-      rows[#rows + 1] = string.format("%s[%s] %s = %s", tostring(row.resource), tostring(row.resource_type),
-        tostring(row.name), tostring(shown))
-    end
-    list[#list + 1] = finding("KAFKA-CONFIG-SECRET-DISCLOSURE",
-      "A configuration value that carries a secret was returned unauthenticated",
+    list[#list + 1] = finding("KAFKA-METADATA-INVENTORY-CHANGED",
+      "The cluster changed while the audit was running",
       "CRITICAL",
-      string.format("%s marked sensitive (or named like a credential) came back with its value attached to an "
-        .. "unauthenticated request. Kafka marks such values 'sensitive' so that DescribeConfigs can withhold "
-        .. "them; a broker that predates the flag, or a client reading a resource whose configuration was "
-        .. "written into a static file, still returns them. The value itself is printed only in part, and it "
-        .. "should be rotated regardless of what it turns out to be.",
-        plural(#capacity.sensitive, "configuration value")),
-      rows, { KB.REMEDIATION[4], KB.REMEDIATION[1] })
+      "The topic list read after the probes differs from the list read before them, or a probe created "
+        .. "state on the cluster. The inventory below is therefore a snapshot rather than a description, "
+        .. "and the operator's own audit trail should be checked before it is trusted.",
+      evidence, { "Re-run the scan against a quiet cluster and compare the two lists.", KB.REMEDIATION[1] })
   end
 
-  -- 5. Name intelligence.
-  if #(naming.matches or {}) > 0 then
-    local rows = {}
-    for index = 1, math.min(#naming.matches, 10) do
-      local match = naming.matches[index]
-      rows[#rows + 1] = string.format("%s (matched '%s', category %s)", tostring(match.topic),
-        tostring(match.token), tostring(match.category))
+  if not inventory.answered then
+    list[#list + 1] = finding("KAFKA-METADATA-NOT-MEASURED",
+      "The metadata inventory could not be read",
+      "INFO",
+      string.format("The broker did not answer the metadata request (%s), so this report makes no claim "
+        .. "about the cluster. A listener that requires authentication, a TLS-only listener and a "
+        .. "filtered path all look like this from outside.", tostring(inventory.error or "no answer")),
+      { tostring(inventory.error or "no answer") }, { KB.REMEDIATION[1], KB.REMEDIATION[6] })
+    return list
+  end
+
+  local usable = (metrics.topics or 0) - (metrics.topic_errors or 0)
+  if metrics.topics > 0 and usable == 0 then
+    list[#list + 1] = finding("KAFKA-METADATA-LISTING-REFUSED",
+      "The listing answered with an error for every topic",
+      "INFO",
+      string.format("The broker returned %s, and every one of them carried an error code, so the "
+        .. "response names the topics without describing them. On a broker with an authorizer this is "
+        .. "the filtered-listing shape: the names still leak, the details do not.",
+        plural(metrics.topics, "topic")),
+      topic_sample(inventory.rows, 8, function(row)
+        return string.format("%s -> %s", tostring(row.name), tostring(row.error_name))
+      end),
+      { KB.REMEDIATION[2], KB.REMEDIATION[1] })
+  elseif metrics.topics > 0 then
+    list[#list + 1] = finding("KAFKA-METADATA-TOPIC-INVENTORY",
+      "The complete topic inventory is visible without authentication",
+      metrics.internal_topics > 0 and "CRITICAL" or "HIGH",
+      string.format("An unauthenticated Metadata request returned %s, %s and %s across %s. The listing "
+        .. "is not a directory: it is the data model of the deployment, and it is answered before any "
+        .. "ACL is consulted on a listener that accepts anonymous clients. With %s in the list the "
+        .. "inventory also identifies the internal subsystems the cluster runs.",
+        plural(metrics.topics, "topic"), plural(metrics.partitions, "partition"),
+        plural(metrics.replicas, "replica"), plural(#(inventory.brokers or {}), "broker"),
+        plural(metrics.internal_topics, "internal topic")),
+      topic_sample(inventory.rows, 10, function(row)
+        return string.format("%s: %s, replication factor %s%s", tostring(row.name),
+          plural(row.partitions, "partition"), num_text(row.replication_factor),
+          row.error_name and row.error_name ~= "NONE" and (" [" .. tostring(row.error_name) .. "]") or "")
+      end),
+      { KB.REMEDIATION[1], KB.REMEDIATION[2], KB.REMEDIATION[4] })
+  end
+
+  if internal.count > 0 then
+    local evidence = {}
+    for _, entry in ipairs(internal.rows) do
+      evidence[#evidence + 1] = entry.knowledge
+        and string.format("%s (%s): %s", entry.row.name, entry.knowledge.component, entry.knowledge.proves)
+        or string.format("%s: an internal topic this script does not recognise", entry.row.name)
     end
-    local categories = sorted_keys(naming.categories)
-    list[#list + 1] = finding("KAFKA-SENSITIVE-TOPIC-NAME-DISCLOSURE",
-      "Topic names describe sensitive business processes",
+    list[#list + 1] = finding("KAFKA-METADATA-INTERNAL-SUBSYSTEMS",
+      "The cluster's internal subsystems are visible to an unauthenticated caller",
       "HIGH",
-      string.format("The listing contains %s whose names match a sensitive pattern, in these categories: %s. "
-        .. "A topic name is not data, but it is the index to the data: it says which system to look for next, "
-        .. "and a scanner that only sees names has already learned which parts of the business are on this "
-        .. "cluster.", plural(#naming.matches, "topic"), fmt_list(categories, 8)),
-      rows, { KB.REMEDIATION[1], KB.REMEDIATION[2] })
+      string.format("%s are described in the response, which tells the caller which components run on "
+        .. "the cluster and how they are sized. Internal topics are also the ones whose loss stops the "
+        .. "deployment rather than one application, so their names are the list an attacker keeps.",
+        plural(internal.count, "internal topic")),
+      evidence, { KB.REMEDIATION[4], KB.REMEDIATION[2] })
+    if #internal.unknown > 0 then
+      list[#list + 1] = finding("KAFKA-METADATA-UNKNOWN-INTERNAL-TOPIC",
+        "An internal topic is not in this script's catalogue",
+        "LOW",
+        string.format("%s is marked internal by the broker but is not one of the names this script "
+          .. "knows. Newer platforms add their own reserved topics, so the name is printed for review "
+          .. "rather than classified.", plural(#internal.unknown, "topic")),
+        topic_sample(internal.unknown, 6, function(row) return tostring(row.name) end),
+        { KB.REMEDIATION[4] })
+    end
   end
 
-  -- 6. Replica topology.
-  if metadata.answered and #(inventory.brokers or {}) > 0 then
-    local broker_rows = {}
+  if naming.count > 0 then
+    local categories = {}
+    for _, key in ipairs(sorted_keys(naming.categories)) do
+      categories[#categories + 1] = string.format("%s x%s", tostring(key), num_text(naming.categories[key]))
+    end
+    local sensitive = count_where(naming.matches, function(match)
+      return match.category ~= "environment" and match.category ~= "commercial"
+    end)
+    list[#list + 1] = finding("KAFKA-METADATA-SENSITIVE-TOPIC-NAMES",
+      "Topic names describe the data they carry",
+      sensitive > 0 and "HIGH" or "MEDIUM",
+      string.format("%s of %s matched a sensitivity pattern (%s). A name is not the data, but it is "
+        .. "enough to prioritise: a caller that knows which topic holds payments does not have to guess "
+        .. "where to spend an attempt.", num_text(sensitive), plural(#naming.matches, "name"),
+        table.concat(categories, ", ")),
+      topic_sample(naming.matches, 10, function(match)
+        return string.format("%s: %s (%s - %s)", tostring(match.topic), tostring(match.category),
+          tostring(match.pattern), tostring(match.why))
+      end),
+      { KB.REMEDIATION[4], KB.REMEDIATION[5] })
+  end
+
+  if metrics.topics > 0 and #(inventory.brokers or {}) > 0 then
+    local evidence = {}
     for _, broker in ipairs(inventory.brokers) do
-      broker_rows[#broker_rows + 1] = string.format("node %s at %s:%s%s", num_text(broker.node_id),
+      evidence[#evidence + 1] = string.format("node %s: %s:%s%s", num_text(broker.node_id),
         tostring(broker.host), num_text(broker.port),
-        broker.rack and (" (rack " .. tostring(broker.rack) .. ")") or "")
+        broker.rack and (" rack " .. tostring(broker.rack)) or "")
     end
-    for _, row in ipairs(inventory.rows or {}) do
-      if #broker_rows < 16 then
-        broker_rows[#broker_rows + 1] = string.format("%s led by %s, replicas on %s", tostring(row.name),
-          fmt_list(sorted_keys(row.leaders or {}), 6),
-          fmt_list(row.health.replication_min and { string.format("%d replica(s)", row.health.replication_min) }
-            or {}, 4))
+    if inventory.cluster_id then
+      evidence[#evidence + 1] = "cluster id: " .. tostring(inventory.cluster_id)
+    end
+    if inventory.controller_id then
+      evidence[#evidence + 1] = "controller: node " .. num_text(inventory.controller_id)
+    end
+    list[#list + 1] = finding("KAFKA-METADATA-TOPOLOGY-DISCLOSURE",
+      "Broker topology and cluster identity are published",
+      "HIGH",
+      string.format("%s and the controller are named to an unauthenticated caller, with the rack "
+        .. "assignment when the brokers advertise one. This is the map a client needs and therefore the "
+        .. "map an attacker needs: every host and port is a target, the controller is the node that "
+        .. "performs deletions, and a rack layout tells the attacker which failure domain holds a "
+        .. "particular replica.", plural(#inventory.brokers, "broker")),
+      evidence, { KB.REMEDIATION[1], KB.REMEDIATION[6] })
+  end
+
+  if metrics.authorized_ops_present > 0 then
+    local evidence = {}
+    for _, row in ipairs(inventory.rows) do
+      if row.authorized_operations and row.authorized_operations >= 0 then
+        evidence[#evidence + 1] = string.format("%s: %s", tostring(row.name),
+          kafka.cluster_ops_text(row.authorized_operations))
       end
     end
-    list[#list + 1] = finding("KAFKA-REPLICA-TOPOLOGY-DISCLOSURE",
-      "Broker endpoints and replica placement are disclosed",
-      "LOW",
-      string.format("%s were named with their host, port and rack, and every partition carried its replica "
-        .. "set. Replica placement is the map an attacker needs to make data unavailable: it says which host "
-        .. "holds which partition, and with the rack assignments it also says how much of the redundancy is "
-        .. "inside a single failure domain.",
-        plural(#(inventory.brokers or {}), "broker")), broker_rows, { KB.REMEDIATION[1], KB.REMEDIATION[4] })
-  end
-
-  -- 7. Stable identifiers.
-  if count_of(inventory.topic_ids) > 0 then
-    local rows = {}
-    for id, name in pairs(inventory.topic_ids) do
-      if #rows < 6 then rows[#rows + 1] = string.format("%s -> %s", id, tostring(name)) end
-    end
-    list[#list + 1] = finding("KAFKA-TOPIC-ID-DISCLOSURE",
-      "Stable topic ids are published",
-      "LOW",
-      string.format("%s carried a topic id. The id is what survives a rename: a caller that recorded it can "
-        .. "follow a topic through a rename or a recreation, which is why brokers return it only in the newer "
-        .. "Metadata versions.", plural(count_of(inventory.topic_ids), "topic")),
-      rows, { KB.REMEDIATION[2] })
-  end
-
-  -- 8. The authorized-operation masks.
-  if #(boundary.masks or {}) > 0 then
-    local rows = {}
-    for index = 1, math.min(#boundary.masks, 8) do
-      local row = boundary.masks[index]
-      rows[#rows + 1] = string.format("%s: %s", tostring(row.name), tostring(row.text))
-    end
-    list[#list + 1] = finding("KAFKA-AUTHORIZED-OPERATIONS-DISCLOSURE",
-      "Per-topic authorized operation masks are disclosed",
-      "LOW",
-      string.format("The broker returned the operation mask of %s. The mask is the set of operations that "
-        .. "could be granted on the resource, so it is a description of the ACL model rather than of the "
-        .. "caller's rights - and it is only computed when a caller asks for it, which means it is published "
-        .. "on request to anyone who can reach the API.",
-        plural(#boundary.masks, "topic")), rows, { KB.REMEDIATION[2] })
-  end
-
-  -- 9. The listing that is not filtered by the ACL that applies to the names.
-  if boundary.listed_but_refused > 0 then
-    list[#list + 1] = finding("KAFKA-LISTING-NOT-FILTERED-BY-ACL",
-      "Topics that are refused by name were still listed",
+    list[#list + 1] = finding("KAFKA-METADATA-AUTHORIZED-OPERATIONS",
+      "Per-topic authorized operations are published",
       "MEDIUM",
-      string.format("%s appeared in the list of all topics and were refused when asked for by name. The "
-        .. "listing path and the single-topic path therefore disagree: a caller learns that a topic exists, "
-        .. "and only then learns that it may not look at it. The refusal is correct; the disclosure in the "
-        .. "listing is not.",
-        plural(boundary.listed_but_refused, "topic")),
-      boundary.refused_by_name, { KB.REMEDIATION[2], KB.REMEDIATION[3] })
+      string.format("The response includes an authorization mask for %s. The mask is derived from the "
+        .. "caller's ACLs, so an anonymous caller that receives a populated mask is being told what it "
+        .. "may do to each topic - including for topics it is not allowed to read records from.",
+        plural(metrics.authorized_ops_present, "topic")),
+      topic_sample(evidence, 8, function(line) return line end),
+      { KB.REMEDIATION[2] })
   end
 
-  -- 10. The unknown-name probe.
-  local unknown = records.metadata_unknown or {}
-  if unknown.answered and unknown.materialised then
-    list[#list + 1] = finding("KAFKA-AUTO-CREATE-FLAG-IGNORED",
-      "A name the caller asked about was created despite the request flag",
-      "CRITICAL",
-      string.format("Metadata was called for '%s' with allow_auto_topic_creation=false, and the cluster "
-        .. "answered with a real topic. The request flag exists exactly to stop this: a scanner (or a client "
-        .. "with a typo) must not be able to create topics. Review auto.create.topics.enable and the "
-        .. "broker's handling of the flag before treating this as anything other than an emergency.",
-        tostring(unknown.requested)),
-      { string.format("%s -> %s", tostring(unknown.requested), tostring(unknown.error_name)),
-        string.format("partitions in the answer: %d", unknown.partitions) },
-      { KB.REMEDIATION[5], KB.REMEDIATION[1] })
-  elseif unknown.answered and kafka.is_authz_error(unknown.error_code) then
-    list[#list + 1] = finding("KAFKA-AUTHORIZATION-PRECEDES-EXISTENCE",
-      "The broker authorizes a topic name before it checks whether it exists",
-      "INFO",
-      string.format("Metadata for '%s' (a name that cannot exist) was refused with %s rather than reported as "
-        .. "unknown. That ordering is deliberate and safe: the caller cannot tell an existing topic from a "
-        .. "missing one. It is recorded here because it also means the audit learned nothing about whether "
-        .. "auto-creation is enabled.",
-        tostring(unknown.requested), tostring(unknown.error_name)),
-      { string.format("error for an impossible name: %s", tostring(unknown.error_name)) },
-      { KB.REMEDIATION[5] })
-  elseif unknown.answered then
-    list[#list + 1] = finding("KAFKA-TOPIC-EXISTENCE-ORACLE",
-      "The broker tells an unauthenticated caller which topic names exist",
-      "MEDIUM",
-      string.format("Metadata for the impossible name '%s' answered %s, which is the same code the cluster "
-        .. "uses for a name that simply does not exist yet. An unauthenticated caller can therefore test "
-        .. "names: ask for a candidate, and the error code says whether the cluster hosts it. Combined with "
-        .. "auto-creation this is how topics appear by accident.",
-        tostring(unknown.requested), tostring(unknown.error_name)),
-      { string.format("%s -> %s", tostring(unknown.requested), tostring(unknown.error_name)) },
-      { KB.REMEDIATION[5], KB.REMEDIATION[2] })
-  end
-
-  -- 11. Durability and availability of what was disclosed.
-  if inventory.under_replicated and inventory.under_replicated > 0 then
-    local rows = {}
-    for _, row in ipairs(inventory.unhealthy or {}) do
-      if row.under_replicated > 0 and #rows < 8 then
-        for index = 1, math.min(#row.bad_partitions, 3) do
-          rows[#rows + 1] = row.bad_partitions[index]
-        end
+  if metrics.topics > 0 and ((metrics.under_replicated or 0) > 0
+    or (metrics.offline_replicas_total or 0) > 0 or (metrics.empty_isr_total or 0) > 0
+    or (metrics.partitions_without_leader or 0) > 0) then
+    local evidence = {}
+    for _, row in ipairs(inventory.rows) do
+      if row.under_replicated > 0 or row.offline_replicas > 0 or row.empty_isr > 0
+        or row.partitions_without_leader > 0 then
+        evidence[#evidence + 1] = string.format("%s: %d under-replicated, %d offline replica(s), "
+          .. "%d empty in-sync set(s)", tostring(row.name), row.under_replicated, row.offline_replicas,
+          row.empty_isr)
       end
     end
-    list[#list + 1] = finding("KAFKA-UNDER-REPLICATED-PARTITIONS",
-      "Under-replicated partitions are published",
+    list[#list + 1] = finding("KAFKA-METADATA-HEALTH-DISCLOSURE",
+      "The cluster's current availability posture is published",
       "MEDIUM",
-      string.format("%s across %s have an in-sync set smaller than their replica set. An under-replicated "
-        .. "partition is one broker failure away from data loss (or from being unable to elect a leader), and "
-        .. "the fact is published to anyone who asks for the metadata.",
-        plural(inventory.under_replicated, "partition"), plural(#(inventory.unhealthy or {}), "topic")),
-      rows, { KB.REMEDIATION[6] })
+      string.format("%s, %s, %s and %s are reported to an unauthenticated caller: %s. A client uses "
+        .. "this to route around a failure; an attacker uses it to choose when to act, because a "
+        .. "cluster with an empty in-sync set has partitions whose data is already at risk.",
+        plural(metrics.under_replicated or 0, "under-replicated partition"),
+        plural(metrics.offline_replicas_total or 0, "offline replica"),
+        plural(metrics.empty_isr_total or 0, "partition with an empty in-sync set"),
+        plural(metrics.partitions_without_leader, "partition without a leader"),
+        fmt_list(health.conditions, 4)),
+      topic_sample(evidence, 8, function(line) return line end),
+      { KB.REMEDIATION[6], KB.REMEDIATION[1] })
   end
 
-  local offline = 0
-  local offline_rows = {}
-  for _, row in ipairs(inventory.rows or {}) do
-    offline = offline + (row.offline or 0)
-    if row.offline > 0 then
-      offline_rows[#offline_rows + 1] = string.format("%s: %s with an offline replica", tostring(row.name),
-        plural(row.offline, "partition"))
-    end
-  end
-  if offline > 0 then
-    list[#list + 1] = finding("KAFKA-OFFLINE-REPLICAS-PUBLISHED",
-      "Partitions with offline replicas are published",
-      "HIGH",
-      string.format("%s list at least one offline replica. An offline replica is data that exists on a broker "
-        .. "the cluster cannot reach: the exposure is operational, and it is also the exact map of which "
-        .. "host is missing and therefore which partition cannot be written with acks=all.",
-        plural(offline, "partition")), offline_rows, { KB.REMEDIATION[6] })
-  end
-
-  local empty_isr, empty_rows = 0, {}
-  for _, row in ipairs(inventory.rows or {}) do
-    empty_isr = empty_isr + (row.empty_isr or 0)
-    if row.empty_isr > 0 then
-      empty_rows[#empty_rows + 1] = string.format("%s: %s with an empty in-sync set", tostring(row.name),
-        plural(row.empty_isr, "partition"))
-    end
-  end
-  if empty_isr > 0 then
-    list[#list + 1] = finding("KAFKA-PARTITIONS-WITHOUT-ISR",
-      "Partitions with an empty in-sync set are published",
-      "HIGH",
-      string.format("%s have no in-sync replica at all, which means no broker holds a complete copy: the "
-        .. "partition is unavailable for writes and will be unavailable for reads until a replica comes back "
-        .. "or an unclean election is allowed. The cluster is announcing its own outage in an unauthenticated "
-        .. "response.", plural(empty_isr, "partition")), empty_rows, { KB.REMEDIATION[6] })
-  end
-
-  -- 12. Leader concentration: a topology observation with an availability edge.
-  local worst_leader, worst_count = nil, 0
-  for leader, count in pairs(inventory.leader_load or {}) do
-    if count > worst_count then worst_leader, worst_count = leader, count end
-  end
-  if worst_leader and inventory.partitions > 0 and worst_count * 100 >= inventory.partitions * 60 then
-    list[#list + 1] = finding("KAFKA-LEADER-CONCENTRATION",
-      "Most partitions are led by one broker",
-      "LOW",
-      string.format("node %s leads %d of %d partitions (%.0f%%). Leadership is client-visible and it is what "
-        .. "decides the effect of losing that broker: the replicas survive, but every client re-elects a "
-        .. "leader at once, which is the storm a large cluster feels as an outage.",
-        num_text(worst_leader), worst_count, inventory.partitions,
-        (worst_count * 100) / inventory.partitions),
-      { string.format("partition leaders by node: %s", (function()
+  if metrics.single_replica > 0 then
+    list[#list + 1] = finding("KAFKA-METADATA-SINGLE-REPLICA-PARTITIONS",
+      "Partitions exist with a single replica",
+      "MEDIUM",
+      string.format("%s have a replication factor of one, so one broker leaving the cluster takes them "
+        .. "offline with no failover. The metadata response publishes that state to every caller.",
+        plural(metrics.single_replica, "partition")),
+      { string.format("replication factor histogram: %s", fmt_list((function()
         local parts = {}
-        for _, leader in ipairs(sorted_keys(inventory.leader_load)) do
-          parts[#parts + 1] = string.format("%s x%d", num_text(leader), inventory.leader_load[leader])
+        for factor, count in pairs(metrics.replication) do
+          parts[#parts + 1] = string.format("x%s on %s", num_text(count), num_text(factor))
         end
-        return table.concat(parts, ", ")
-      end)()) }, { KB.REMEDIATION[6] })
+        table.sort(parts)
+        return parts
+      end)(), 6)) },
+      { KB.REMEDIATION[3] })
   end
 
-  -- 13. Replication factor one.
-  local unreplicated = {}
-  for _, row in ipairs(inventory.rows or {}) do
-    if row.replication_max == 1 and not row.is_internal then
-      unreplicated[#unreplicated + 1] = string.format("%s: %s at replication factor 1", tostring(row.name),
-        plural(row.partition_count, "partition"))
-    end
-  end
-  if #unreplicated > 0 then
-    local single = #(inventory.brokers or {}) <= 1
-    list[#list + 1] = finding("KAFKA-UNREPLICATED-TOPICS",
-      "Topics are published with a single replica",
-      "INFO",
-      string.format("%s have replication factor 1. On a single-broker cluster that is a design choice; on a "
-        .. "cluster with %s it is a durability decision, and the metadata publishes it to whoever asks.",
-        plural(#unreplicated, "topic"), plural(#(inventory.brokers or {}), "broker")),
-      unreplicated, single and { KB.REMEDIATION[5] } or { KB.REMEDIATION[6] })
-  end
-
-  -- 14. The settings that weaken the durability of everything above.
-  for _, row in ipairs(capacity.insync_values or {}) do
-    if tonumber(row.value) == 1 then
-      list[#list + 1] = finding("KAFKA-MIN-INSYNC-REPLICAS-WEAK",
-        "min.insync.replicas is 1",
-        "MEDIUM",
-        string.format("Resource %s sets min.insync.replicas=%s. With this value an acks=all write needs one "
-          .. "replica to acknowledge it, so a producer that believes it is durable is not: the setting has "
-          .. "to be 2 or more with a replication factor of 3 for acks=all to mean anything.",
-          tostring(row.resource), tostring(row.rendered)),
-        { string.format("%s: min.insync.replicas=%s (%s)", tostring(row.resource), tostring(row.value),
-          tostring(row.source)) }, { KB.REMEDIATION[6] })
-      break
-    end
-  end
-  for _, row in ipairs(capacity.notable or {}) do
-    if row.name == "unclean.leader.election.enable" and row.value == "true" then
-      list[#list + 1] = finding("KAFKA-UNCLEAN-LEADER-ELECTION-ENABLED",
-        "Unclean leader election is enabled",
-        "MEDIUM",
-        string.format("Resource %s sets unclean.leader.election.enable=true: an out-of-sync replica may "
-          .. "become leader, which restores availability by discarding the records the in-sync set had that "
-          .. "the elected replica did not. That is a deliberate trade, and it is also a setting that decides "
-          .. "whether the offline-replica findings above end in data loss.",
-          tostring(row.resource)),
-        { string.format("%s: unclean.leader.election.enable=true", tostring(row.resource)) },
-        { KB.REMEDIATION[6] })
-      break
-    end
-  end
-
-  if capacity.auto_create == "true" then
-    list[#list + 1] = finding("KAFKA-AUTO-CREATE-ENABLED",
-      "Auto topic creation is enabled",
+  if unknown.ran and unknown.verdict == "created" then
+    list[#list + 1] = finding("KAFKA-METADATA-AUTO-CREATED-TOPIC",
+      "A metadata request created a topic",
+      "CRITICAL",
+      string.format("The random name %s was absent before the probe and is present after it, even "
+        .. "though the request explicitly set allow_auto_topic_creation=false. The broker ignored the "
+        .. "flag, so any client that names a topic creates it: an attacker can allocate names and "
+        .. "consume the cluster's storage without creating anything.", tostring(unknown.name)),
+      { string.format("%s -> %s with %d partition(s)", tostring(unknown.name),
+        tostring(unknown.error_name or "no error"), unknown.partitions or 0) },
+      { KB.REMEDIATION[3], KB.REMEDIATION[6] })
+  elseif unknown.ran and unknown.verdict == "absent" then
+    list[#list + 1] = finding("KAFKA-METADATA-EXISTENCE-ORACLE",
+      "The broker confirms whether a topic exists to an unauthenticated caller",
       "MEDIUM",
-      string.format("The broker reports auto.create.topics.enable=true: any client that names a topic the "
-        .. "cluster does not have causes it to be created with %s and %s. That is both a resource-exhaustion "
-        .. "path (a client can create topics until the cluster is full) and the reason an existence oracle "
-        .. "exists at all.",
-        capacity.num_partitions and (num_text(capacity.num_partitions) .. " partitions") or "the default",
-        capacity.default_replication_factor
-          and (num_text(capacity.default_replication_factor) .. " replica(s)") or "the default replication"),
-      { "auto.create.topics.enable=true (broker configuration)" }, { KB.REMEDIATION[5] })
-  end
-
-  if exposure.granted > 0 and not (records.describe_configs or {}).answered then
-    list[#list + 1] = finding("KAFKA-AUTHORIZER-MODEL-UNKNOWN",
-      "The authorizer model could not be read",
+      string.format("Asking for the random name %s answered %s, while a topic the caller may not "
+        .. "describe would answer with an authorization error. The difference between the two answers "
+        .. "is an existence oracle: the caller can test any name it can guess, and the answer arrives "
+        .. "without credentials.", tostring(unknown.name), tostring(unknown.error_name)),
+      { string.format("%s -> %s after %d entr(ies)", tostring(unknown.name),
+        tostring(unknown.error_name), unknown.entries or 0) },
+      { KB.REMEDIATION[2], KB.REMEDIATION[1] })
+  elseif unknown.ran and unknown.verdict == "refused" then
+    list[#list + 1] = finding("KAFKA-METADATA-EXISTENCE-REFUSED",
+      "Existence checks are refused before the lookup",
       "INFO",
-      string.format("%s answered without authentication while DescribeConfigs did not, so the report cannot "
-        .. "say whether an authorizer is loaded. On a cluster with no authorizer the metadata path is open by "
-        .. "design; on a cluster with one, the open path is a configuration error.", plural(exposure.granted, "API")),
-      { "authorizer.class.name could not be read" }, { KB.REMEDIATION[3] })
+      string.format("%s answered %s, which is an authorization decision made before the name was "
+        .. "looked up. A broker that refuses first does not confirm whether the name exists, so this "
+        .. "oracle is closed.", tostring(unknown.name), tostring(unknown.error_name)),
+      { tostring(unknown.error_name) }, { KB.REMEDIATION[2] })
   end
 
-  local filtered_listing = false
-  for _, row in ipairs(exposure.rows or {}) do
-    if row.filtered then filtered_listing = true end
+  if #boundary.hidden > 0 then
+    list[#list + 1] = finding("KAFKA-METADATA-HIDDEN-TOPIC-ORACLE",
+      "A topic hidden from the listing is described when it is named directly",
+      "HIGH",
+      string.format("%s did not appear in the wildcard listing but was described when requested by "
+        .. "name (%s). The listing is filtered, and that filter is what an operator would audit; the "
+        .. "per-name path is not, so a caller that knows a name reads a topic the listing pretends it "
+        .. "cannot see.", plural(#boundary.hidden, "topic"), fmt_list(boundary.hidden, 6)),
+      topic_sample(boundary.hidden, 8, function(name) return tostring(name) end),
+      { KB.REMEDIATION[2], KB.REMEDIATION[1] })
+  elseif boundary.skipped and usable > 0 then
+    list[#list + 1] = finding("KAFKA-METADATA-NAMED-PATH-NOT-MEASURED",
+      "The per-name metadata path was not measured",
+      "INFO", tostring(boundary.skipped), {}, { KB.REMEDIATION[1] })
+  elseif boundary.requested > 0 and boundary.refused == boundary.requested then
+    list[#list + 1] = finding("KAFKA-METADATA-LISTING-FILTERED",
+      "The listing is not filtered but per-name requests are refused",
+      "MEDIUM",
+      string.format("The wildcard request returned %s while all %s were refused when requested by "
+        .. "name. The broker is enforcing DESCRIBE on the topic resource for direct requests but "
+        .. "answering the wildcard from an unfiltered cache, which is the inconsistency the operator's "
+        .. "ACL review would not show.", plural(metrics.topics, "topic"),
+        plural(boundary.requested, "name")),
+      topic_sample(boundary.refused_names, 8, function(name) return tostring(name) end),
+      { KB.REMEDIATION[2], KB.REMEDIATION[6] })
   end
-  if metadata.answered and (metadata.access == "filtered" or filtered_listing) then
-    list[#list + 1] = finding("KAFKA-METADATA-FILTERED",
-      "The metadata listing was filtered down to nothing",
+
+  if configs.sensitive_disclosed > 0 then
+    list[#list + 1] = finding("KAFKA-METADATA-SENSITIVE-CONFIG-DISCLOSED",
+      "A configuration value marked sensitive was returned in the clear",
+      "CRITICAL",
+      string.format("%s marked sensitive arrived with a value. Kafka's own protocol has a sensitive "
+        .. "flag for exactly this reason, and a broker that ignores it publishes credentials to anyone "
+        .. "who can call DescribeConfigs.",
+        plural(configs.sensitive_disclosed, "configuration entry")),
+      sensitive_evidence(configs, 6), { KB.REMEDIATION[2], KB.REMEDIATION[7] })
+  end
+
+  if #configs.weak > 0 then
+    local dangerous = count_where(configs.weak, function(row) return row.dangerous end)
+    local evidence = {}
+    for index = 1, math.min(#configs.weak, 10) do
+      local row = configs.weak[index]
+      evidence[#evidence + 1] = string.format("%s=%s%s [%s] %s", tostring(row.key),
+        #row.value > 0 and row.value or "(empty)", row.dangerous and " <-- weak" or "",
+        tostring(row.source or "unknown source"), tostring(row.why))
+    end
+    list[#list + 1] = finding("KAFKA-METADATA-BROKER-CONFIG-EXPOSURE",
+      "Broker settings that decide the cluster's security posture are readable",
+      dangerous > 0 and "CRITICAL" or "HIGH",
+      string.format("%s of broker configuration are readable without authentication, and %s of them "
+        .. "are set to a value that weakens the cluster. DescribeConfigs is an administrative API: on "
+        .. "a listener that accepts anonymous callers it turns the cluster's own configuration into "
+        .. "reconnaissance.",
+        plural(#configs.broker_rows, "entry"), num_text(dangerous)),
+      evidence, { KB.REMEDIATION[2], KB.REMEDIATION[1] })
+    for _, row in ipairs(configs.weak) do
+      if row.key == "allow.everyone.if.no.acl.found" and row.dangerous then
+        list[#list + 1] = finding("KAFKA-METADATA-AUTHORIZATION-BYPASS-SETTING",
+          "The broker grants access when no ACL matches",
+          "CRITICAL",
+          string.format("allow.everyone.if.no.acl.found=%s means a request that matches no ACL is "
+            .. "allowed rather than denied. Every other authorization finding in this report becomes "
+            .. "worse under that setting: the ACLs only restrict the principals they name, and "
+            .. "everyone else has full access.", tostring(row.value)),
+          { string.format("allow.everyone.if.no.acl.found=%s", tostring(row.value)) },
+          { KB.REMEDIATION[2], KB.REMEDIATION[7] })
+      end
+      if row.key == "authorizer.class.name" and row.dangerous then
+        list[#list + 1] = finding("KAFKA-METADATA-NO-AUTHORIZER",
+          "No authorizer is configured on the broker",
+          "CRITICAL",
+          string.format("authorizer.class.name is empty, so the broker has no component that can "
+            .. "enforce an ACL. Any ACL that exists in configuration or in a management tool is "
+            .. "decoration on this listener."),
+          { "authorizer.class.name is empty" }, { KB.REMEDIATION[2], KB.REMEDIATION[7] })
+      end
+      if row.key == "auto.create.topics.enable" and row.dangerous then
+        list[#list + 1] = finding("KAFKA-METADATA-AUTO-CREATE-ENABLED",
+          "The broker creates topics on demand",
+          "HIGH",
+          string.format("auto.create.topics.enable=%s lets any client that names a topic allocate it, "
+            .. "with the broker's default partition count and replication factor. An unauthenticated "
+            .. "caller can therefore consume the cluster's storage and, if the name matches what an "
+            .. "application expects to consume, have its own records read by that application.",
+            tostring(row.value)),
+          { string.format("auto.create.topics.enable=%s", tostring(row.value)) },
+          { KB.REMEDIATION[3], KB.REMEDIATION[7] })
+      end
+      if row.key == "unclean.leader.election.enable" and row.dangerous then
+        list[#list + 1] = finding("KAFKA-METADATA-UNCLEAN-ELECTION-ENABLED",
+          "Out-of-sync replicas may be promoted",
+          "MEDIUM",
+          string.format("unclean.leader.election.enable=%s allows a replica that is behind to become "
+            .. "the leader when the in-sync set is empty. Acknowledged writes that only the previous "
+            .. "leader held are then discarded, so the cluster's own durability guarantee is weaker "
+            .. "than the producers believe.", tostring(row.value)),
+          { string.format("unclean.leader.election.enable=%s", tostring(row.value)) },
+          { KB.REMEDIATION[3] })
+      end
+    end
+  end
+
+  if #configs.topic_rows > 0 then
+    local long_retention = {}
+    for _, row in ipairs(configs.topic_rows) do
+      local value = tonumber(tostring(row.value))
+      if row.key == "retention.ms" and value and value > 30 * 24 * 3600 * 1000 then
+        long_retention[#long_retention + 1] = row
+      end
+      if row.key == "retention.bytes" and value and value < 0 then
+        long_retention[#long_retention + 1] = row
+      end
+    end
+    list[#list + 1] = finding("KAFKA-METADATA-TOPIC-CONFIG-EXPOSURE",
+      "Per-topic settings are readable without authentication",
+      "MEDIUM",
+      string.format("%s of topic configuration were read for %s. Retention is the number that decides "
+        .. "how much data a leak exposes, and it is the setting a caller would read first when "
+        .. "planning what to collect.", plural(#configs.topic_rows, "setting"),
+        plural(#configs.topic_security, "topic")),
+      topic_sample(configs.topic_rows, 10, function(row)
+        return string.format("%s.%s = %s (%s)", tostring(row.topic), tostring(row.key),
+          tostring(row.value), tostring(row.why))
+      end),
+      { KB.REMEDIATION[2], KB.REMEDIATION[6] })
+    if #long_retention > 0 then
+      list[#list + 1] = finding("KAFKA-METADATA-LONG-RETENTION",
+        "A topic retains records longer than a month, or forever",
+        "MEDIUM",
+        string.format("%s keep records for longer than thirty days, or are configured with unlimited "
+          .. "retention. A long window is an operational choice, and it is also the window in which "
+          .. "anything written to the topic - including a credential or a token - is still readable.",
+          plural(#long_retention, "topic")),
+        topic_sample(long_retention, 6, function(row)
+          return string.format("%s.%s = %s", tostring(row.topic), tostring(row.key), tostring(row.value))
+        end),
+        { KB.REMEDIATION[6] })
+    end
+  end
+
+  local groups = records.list_groups or {}
+  if groups.answered and (groups.count or 0) > 0 then
+    local evidence = {}
+    for _, group in ipairs(groups.groups or {}) do
+      evidence[#evidence + 1] = string.format("%s: state %s, protocol %s", tostring(group.group_id),
+        tostring(group.state), tostring(group.protocol_type or "-"))
+    end
+    local internal_note = ""
+    for _, row in ipairs(inventory.rows) do
+      if string.find(row.name, "__consumer_offsets", 1, true) then
+        internal_note = string.format(" The __consumer_offsets topic is present with %s, which is "
+          .. "where those groups store their positions.", plural(row.partitions, "partition"))
+      end
+    end
+    list[#list + 1] = finding("KAFKA-METADATA-GROUP-NAMES-DISCLOSED",
+      "Consumer group names are visible without authentication",
+      "MEDIUM",
+      string.format("ListGroups answered with %s and their state. Group names identify the "
+        .. "applications, the environments and often the team that owns them, and a group that is "
+        .. "listed but has no consumer tells the caller which pipeline is currently down.%s",
+        plural(groups.count, "consumer group"), internal_note),
+      topic_sample(evidence, 10, function(line) return line end),
+      { KB.REMEDIATION[2], KB.REMEDIATION[8] })
+  end
+
+  if configs.broker_answered and usable > 0 and #configs.broker_rows >= 3 then
+    local authorizer_seen = false
+    for _, row in ipairs(configs.broker_rows) do
+      if row.name == "authorizer.class.name" then authorizer_seen = true end
+    end
+    if not authorizer_seen then
+      list[#list + 1] = finding("KAFKA-METADATA-AUTHORIZER-NOT-VISIBLE",
+        "Describing the broker did not return an authorizer setting",
+        "INFO",
+        "The config response contained no authorizer.class.name entry, so either the broker is older "
+          .. "than that setting or the response was filtered. Whether ACLs are enforced cannot be "
+          .. "decided from this answer alone.",
+        { string.format("%s broker settings read", num_text(#configs.broker_rows)) },
+        { KB.REMEDIATION[2] })
+    end
+  end
+
+  if not negotiate.answered then
+    list[#list + 1] = finding("KAFKA-METADATA-NEGOTIATION-FAILED",
+      "The API version negotiation was not answered",
+      "INFO",
+      string.format("ApiVersions was not answered (%s). Everything below is limited to what the "
+        .. "remaining requests returned; a TLS-only listener and a filtered path both look like this.",
+        tostring(negotiate.error)),
+      { tostring(negotiate.error) }, { KB.REMEDIATION[1] })
+  end
+
+  if #list == 0 then
+    list[#list + 1] = finding("KAFKA-METADATA-NO-FINDING",
+      "No metadata exposure was measured",
       "NONE",
-      string.format("Metadata answered, but the broker returned no topic and withheld the cluster "
-        .. "authorized-operation mask (%s). That is what an authorizer looks like from outside: the request "
-        .. "is served, the principal is evaluated, and the listing is filtered to the resources it may "
-        .. "describe. Nothing was disclosed on this path, and the report records the distinction because an "
-        .. "empty answer from a filtered cluster and an empty answer from an empty cluster are not the same "
-        .. "observation.", kafka.cluster_ops_text(metadata.cluster_authorized_operations)),
-      { "topics returned: 0, cluster authorized operations: "
-        .. kafka.cluster_ops_text(metadata.cluster_authorized_operations) }, { KB.REMEDIATION[2] })
-  end
-
-  if not metadata.answered then
-    list[#list + 1] = finding("KAFKA-METADATA-NOT-AVAILABLE",
-      "The metadata API was not answered",
-      "INFO",
-      string.format("Metadata did not answer (%s), so no topic was read and this report makes no claim about "
-        .. "the cluster's inventory. A listener that requires authentication, a TLS-only listener and a "
-        .. "filtered network path all look like this from outside.",
-        tostring(metadata.error)),
-      { tostring(metadata.error) }, { KB.REMEDIATION[1] })
+      "Every metadata request was refused or returned nothing that describes the cluster. The access "
+        .. "matrix above shows which request received which answer.",
+      { string.format("%d of %d requests were granted", exposure.granted or 0, exposure.total or 0) },
+      { KB.REMEDIATION[6] })
   end
 
   return list
 end
 
+----------------------------------------------------------------------------
+-- 8. Knowledge base: what to do about it, and how to check it was done
+----------------------------------------------------------------------------
+
+KB.REMEDIATION = {
+  {
+    step = "Require authentication on the client listener before anything else: set a SASL mechanism on "
+      .. "the listener (listener.name.<name>.sasl.enabled.mechanisms) and remove ANONYMOUS from it.",
+    why = "Every finding in this report is caused by the same thing: an unauthenticated caller reaching "
+      .. "APIs that were designed for clients. An ACL cannot match a caller that has no principal.",
+  },
+  {
+    step = "Set authorizer.class.name (or the KRaft equivalent) and grant DESCRIBE explicitly: "
+      .. "kafka-acls.sh --add --allow-principal User:<app> --operation Describe --topic <name>.",
+    why = "Metadata has no separate 'list' permission: DESCRIBE on the topic resource decides both "
+      .. "whether the topic appears in a wildcard listing and whether a named request is answered.",
+  },
+  {
+    step = "Set auto.create.topics.enable=false and create topics through a pipeline that owns the "
+      .. "name, the partition count and the replication factor.",
+    why = "On-demand creation lets any caller allocate storage and choose a name an application may "
+      .. "later consume from.",
+  },
+  {
+    step = "Review which internal topics exist and treat their names as inventory: keep __consumer_offsets "
+      .. "and __transaction_state out of any ACL grant that is not the coordinator's own principal, and "
+      .. "restrict DESCRIBE on them to the operator role.",
+    why = "The names describe the deployment (Schema Registry, Connect, MirrorMaker, CDC) and the "
+      .. "internal topics are the ones whose loss stops the whole pipeline.",
+  },
+  {
+    step = "Rename topics that describe regulated data so that the name does not classify the payload, "
+      .. "and keep the mapping in the schema registry or in the application's configuration.",
+    why = "A name is metadata that travels everywhere - logs, dashboards, error messages, this report - "
+      .. "and it cannot be revoked once it is known.",
+  },
+  {
+    step = "Scan the cluster again with this script after the change and confirm that Metadata answers "
+      .. "with an authorization error and that the inventory section is empty.",
+    why = "The claim being tested is about behaviour, and only a request measures behaviour: an ACL "
+      .. "attached to the wrong resource and a listener that still accepts anonymous clients both look "
+      .. "correct in configuration.",
+  },
+  {
+    step = "Audit the settings this report could read: allow.everyone.if.no.acl.found must be false, "
+      .. "authorizer.class.name must be set, super.users must name as few principals as possible, and no "
+      .. "sensitive value may be returned by DescribeConfigs.",
+    why = "Those four settings decide whether the ACLs are enforced at all, and they were readable to an "
+      .. "unauthenticated caller, which means they are readable to anyone who can reach the port.",
+  },
+  {
+    step = "Restrict DescribeConfigs and ListGroups the way you restrict Metadata: they are admin APIs, "
+      .. "and their answers describe the deployment rather than one topic.",
+    why = "Group names, connector settings and broker configuration are the reconnaissance an attacker "
+      .. "would otherwise have to obtain from inside the network.",
+  },
+}
+
+KB.VERIFICATION = {
+  "kafka-topics.sh --bootstrap-server <broker> --list  (with credentials: the topics exist; without "
+    .. "credentials the command must fail with TopicAuthorizationException)",
+  "kafka-configs.sh --bootstrap-server <broker> --describe --entity-type brokers --entity-name <id>  "
+    .. "(check allow.everyone.if.no.acl.found, authorizer.class.name and super.users)",
+  "kafka-acls.sh --bootstrap-server <broker> --list --topic <name>  (show the DESCRIBE grants)",
+  "kafka-consumer-groups.sh --bootstrap-server <broker> --list  (with credentials; without credentials "
+    .. "it must fail rather than list the groups)",
+  "kafka-broker-api-versions.sh --bootstrap-server <broker>  (compare the advertised API surface with "
+    .. "the ApiVersions row in this report)",
+  "grep -iE 'MetadataRequest|DescribeConfigs|ListGroups' <broker request log>  (confirm the anonymous "
+    .. "requests are logged and attributed)",
+}
+
+KB.METHOD_LIMITS = {
+  "The inventory is the broker's answer to one Metadata request. A topic that was created or deleted "
+    .. "between the two reads at the start and the end of this scan appears as a change, which the "
+    .. "safety ledger reports rather than hides.",
+  "A wildcard Metadata listing is filtered per principal when an authorizer is configured. A short list "
+    .. "is therefore not proof of a small cluster: it can mean the caller may describe only a few "
+    .. "topics, and the per-name section of this report is what distinguishes the two.",
+  "The script does not read records. Everything it reports about a topic comes from the metadata the "
+    .. "broker publishes, so 'the topic exists and holds N partitions' is not a claim about the data "
+    .. "inside it.",
+  "DescribeConfigs values that the broker marks sensitive are never printed by this report; a value is "
+    .. "quoted only when the broker sent one, which is itself the finding.",
+  "The random-name probe is disabled by default because it is the one request that could create a topic "
+    .. "on a broker that ignores allow_auto_topic_creation. When it is enabled, the script re-reads the "
+    .. "topic list and reports a creation as a critical finding instead of as a measurement.",
+  "Broker configuration is read once per broker that answered the first metadata request. A cluster "
+    .. "whose controller is not among those brokers is described by the brokers that did answer, and the "
+    .. "controller id in this report is whatever the metadata response said.",
+  "A listener in front of the broker (a proxy, a load balancer, a Kafka Connect REST endpoint that "
+    .. "merely looks like Kafka) can answer some of these requests and not others; the access matrix "
+    .. "names each request's outcome separately for that reason.",
+}
+
+KB.ATTACK_VALUE = {
+  { exposure = "the topic list",
+    value = "names the data model; an attacker prioritises which topic to attack and which credential "
+      .. "to look for, and a topic whose name says 'payments' does not have to be discovered by "
+      .. "guessing" },
+  { exposure = "internal topic names",
+    value = "identifies the rest of the platform (Schema Registry, Connect, MirrorMaker, CDC), which "
+      .. "turns one exposed broker into a map of the deployment" },
+  { exposure = "broker inventory",
+    value = "every host and port is a target, the controller is the node that performs deletions, and "
+      .. "the rack layout says which failure domain holds a replica" },
+  { exposure = "partition and replica counts",
+    value = "decides where a single write lands and how much a caller can allocate; replication "
+      .. "factor one is a partition that fails with its only broker" },
+  { exposure = "health state",
+    value = "under-replicated partitions and empty in-sync sets say when data is already at risk, "
+      .. "which is when an unclean election is possible" },
+  { exposure = "broker configuration",
+    value = "allow.everyone.if.no.acl.found, super.users and the authorizer class tell an attacker "
+      .. "whether ACLs are enforced and which principal to aim for" },
+  { exposure = "topic configuration",
+    value = "retention decides how much data is still there to collect, and min.insync.replicas "
+      .. "decides what a write actually costs" },
+  { exposure = "authorized operations masks",
+    value = "the broker itself lists what the caller may do to each topic, which is a to-do list for "
+      .. "the rest of the scan" },
+}
 
 ----------------------------------------------------------------------------
--- 8. Report
+-- 9. Report
 ----------------------------------------------------------------------------
 
 local report = {}
@@ -1514,320 +1820,275 @@ function report.target_section(cfg, host, port, w, records)
   local lines = {
     string.format("Endpoint: %s:%d/%s", host.ip or "target", port.number, port.protocol or "tcp"),
     string.format("Client id: %s", cfg.client_id),
-    string.format("Timeout: %dms, retry on transient errors: %s", cfg.timeout, fmt_bool(cfg.retry)),
-    string.format("Budget: %s, configuration read: %s, unknown-name probe: %s",
-      plural(cfg.max_topics, "topic"), fmt_bool(cfg.configs), fmt_bool(cfg.unknown_probe)),
+    string.format("Timeout: %dms per request", cfg.timeout),
+    string.format("Metadata schema requested: v%d (a newer schema carries topic ids and leader epochs)",
+      METADATA_PREFERENCE),
   }
-  if cfg.topics then lines[#lines + 1] = "Topics requested by name (operator supplied): "
-    .. fmt_list(cfg.topics, 10) end
-  if cfg.patterns then lines[#lines + 1] = "Extra name patterns: " .. fmt_list(cfg.patterns, 10) end
   local negotiate = records.negotiate or {}
-  local versions = negotiate.versions or {}
-  local rows = {}
-  for _, key in ipairs({ 3, 32, 60, 16, 19, 20, 36, 18 }) do
-    local entry = versions[key]
-    if entry and entry.broker_max then
-      rows[#rows + 1] = string.format("%s v%d", kafka.api_name(key), entry.broker_max)
-    end
+  if negotiate.answered then
+    lines[#lines + 1] = string.format("ApiVersions: %s advertised, error %s, throttle %sms",
+      plural(negotiate.count or 0, "API"), tostring(negotiate.error_name),
+      num_text(negotiate.throttle_ms or 0))
   end
-  if #rows > 0 then lines[#lines + 1] = "Version negotiation selected: " .. fmt_list(rows, 8) end
-  if negotiate.answered == false then
-    lines[#lines + 1] = "ApiVersions was not answered; every later row is limited by that."
+  if w.failures and #w.failures > 0 then
+    lines[#lines + 1] = string.format("Unanswered stages: %s", fmt_list((function()
+      local parts = {}
+      for _, failure in ipairs(w.failures) do
+        parts[#parts + 1] = failure.stage .. " (" .. tostring(failure.reason) .. ")"
+      end
+      return parts
+    end)(), 6))
   end
-  if #w.stages > 0 then
+  if cfg.verbose and #w.stages > 0 then
     local stages = {}
-    for _, stage in ipairs(w.stages) do
-      stages[#stages + 1] = stage.detail and (stage.name .. " (" .. stage.detail .. ")") or stage.name
-    end
+    for _, stage in ipairs(w.stages) do stages[#stages + 1] = stage.name end
     lines[#lines + 1] = "Stages: " .. table.concat(stages, ", ")
-  end
-  if w.failure then lines[#lines + 1] = "Transport failure: " .. tostring(w.failure) end
-  return lines
-end
-
-function report.access_section(exposure, records)
-  local lines = { string.format("%-28s %-12s %-8s %s", "Request", "Access", "Version", "What came back") }
-  for _, row in ipairs(exposure.rows or {}) do
-    lines[#lines + 1] = string.format("%-28s %-12s %-8s %s", row.name, tostring(row.access),
-      row.version and ("v" .. num_text(row.version)) or "-", tostring(row.detail or "-"))
-  end
-  lines[#lines + 1] = string.format("Summary: %d answered, %d refused, %d unanswered",
-    exposure.granted or 0, exposure.denied or 0, exposure.unanswered or 0)
-  local metadata = records.metadata_all or {}
-  if metadata.answered and metadata.trailing_bytes and metadata.trailing_bytes > 0 then
-    lines[#lines + 1] = string.format("The Metadata response carried %d unparsed trailing byte(s).",
-      metadata.trailing_bytes)
   end
   return lines
 end
 
 function report.cluster_section(inventory, records)
   local lines = {}
-  local metadata = records.metadata_all or {}
-  if not metadata.answered then
-    return { "No cluster description: Metadata was not answered." }
+  if not inventory.answered then
+    lines[#lines + 1] = "The cluster was not described: " .. tostring(inventory.error or "no answer")
+    return lines
   end
   lines[#lines + 1] = string.format("Cluster id: %s", tostring(inventory.cluster_id or "withheld"))
-  lines[#lines + 1] = string.format("Controller: %s",
-    inventory.controller_id and num_text(inventory.controller_id) or "not returned by this version")
-  local describe = records.describe_cluster or {}
-  if describe.answered then
-    lines[#lines + 1] = string.format("DescribeCluster v%s: %s, endpoint type %s",
-      num_text(describe.version), tostring(describe.error_name or "no error"),
-      num_text(describe.endpoint_type or 0))
-    if describe.cluster_authorized_operations ~= nil then
-      lines[#lines + 1] = "Cluster authorized operations: "
-        .. kafka.cluster_ops_text(describe.cluster_authorized_operations)
-    end
-  else
-    lines[#lines + 1] = string.format("DescribeCluster did not answer (%s)",
-      tostring(describe.error or "no response"))
-  end
-  if inventory.cluster_authorized_operations ~= nil then
-    local mask = (metadata.cluster_authorized_operations ~= nil)
-      and metadata.cluster_authorized_operations or inventory.cluster_authorized_operations
-    lines[#lines + 1] = "Metadata cluster authorized operations: " .. kafka.cluster_ops_text(mask)
-  end
-  lines[#lines + 1] = string.format("Brokers: %d", #(inventory.brokers or {}))
+  lines[#lines + 1] = string.format("Controller: %s", inventory.controller_id
+    and ("node " .. num_text(inventory.controller_id)) or "not returned")
+  lines[#lines + 1] = string.format("Brokers: %s", plural(#(inventory.brokers or {}), "node"))
   for _, broker in ipairs(inventory.brokers or {}) do
     lines[#lines + 1] = string.format("  node %s: %s:%s%s", num_text(broker.node_id), tostring(broker.host),
-      num_text(broker.port), broker.rack and (" rack " .. tostring(broker.rack)) or " (no rack reported)")
+      num_text(broker.port), broker.rack and (" rack " .. tostring(broker.rack)) or "")
   end
-  if count_of(inventory.racks) > 0 then
-    local rack_rows = {}
-    for _, rack in ipairs(sorted_keys(inventory.racks)) do
-      rack_rows[#rack_rows + 1] = string.format("%s x%d", tostring(rack), inventory.racks[rack])
-    end
-    lines[#lines + 1] = "Racks: " .. fmt_list(rack_rows, 8)
-  end
-  local groups = records.list_groups or {}
-  if groups.answered then
-    lines[#lines + 1] = string.format("Consumer groups visible to the same caller: %s",
-      plural(#(groups.groups or {}), "group"))
+  local cluster = records.describe_cluster or {}
+  if cluster.answered then
+    lines[#lines + 1] = string.format("DescribeCluster v%s: endpoint type %s, fenced %s, authorized "
+      .. "operations %s", num_text(cluster.version), num_text(cluster.endpoint_type),
+      tostring(cluster.is_fenced), cluster.authorized_operations
+        and kafka.cluster_ops_text(cluster.authorized_operations) or "-")
+  elseif cluster.skipped then
+    lines[#lines + 1] = "DescribeCluster: " .. tostring(cluster.skipped)
+  else
+    lines[#lines + 1] = "DescribeCluster was not answered: " .. tostring(cluster.error or "no answer")
   end
   return lines
 end
 
 function report.inventory_section(inventory, cfg)
-  local lines = {}
-  if inventory.listed == 0 then
-    lines[#lines + 1] = "No topic was listed."
-    if inventory.with_error and inventory.with_error > 0 then
-      lines[#lines + 1] = string.format("%d requested name(s) came back with an error instead of metadata.",
-        inventory.with_error)
-    end
-    return lines
-  end
-  lines[#lines + 1] = string.format("%s listed (%d internal, %d user), %s, %s",
-    plural(inventory.listed, "topic"), inventory.internal, inventory.user,
-    plural(inventory.partitions, "partition"), plural(inventory.replicas, "replica placement"))
-  if inventory.truncated then
-    lines[#lines + 1] = string.format("Only the first %d topics are printed; raise kafka.max-topics to see "
-      .. "the rest.", cfg.max_topics)
-  end
-  lines[#lines + 1] = string.format("%-34s %5s %6s %5s %5s  %s", "Topic", "Parts", "Repl", "ISR", "Bad",
-    "Attributes")
-  for _, row in ipairs(inventory.rows) do
-    local attributes = {}
-    if row.is_internal then attributes[#attributes + 1] = "internal" end
-    if row.error_code and row.error_code ~= 0 then
-      attributes[#attributes + 1] = "error " .. tostring(row.error_name)
-    end
-    if row.under_replicated > 0 then
-      attributes[#attributes + 1] = string.format("%d under-replicated", row.under_replicated)
-    end
-    if row.offline > 0 then attributes[#attributes + 1] = string.format("%d with offline replica", row.offline) end
-    if row.empty_isr > 0 then attributes[#attributes + 1] = string.format("%d without ISR", row.empty_isr) end
-    if row.no_leader > 0 then attributes[#attributes + 1] = string.format("%d without leader", row.no_leader) end
-    if row.replication_min == 1 and not row.is_internal then attributes[#attributes + 1] = "unreplicated" end
-    lines[#lines + 1] = string.format("%-34s %5s %6s %5s %5s  %s", string.sub(tostring(row.name), 1, 34),
-      num_text(row.partition_count),
-      row.replication_max and (row.replication_min == row.replication_max and num_text(row.replication_max)
-        or (num_text(row.replication_min) .. "-" .. num_text(row.replication_max))) or "?",
-      num_text(row.isr_min or 0), num_text(row.under_replicated + row.offline + row.empty_isr),
-      #attributes > 0 and table.concat(attributes, ", ") or "-")
-  end
-  if #(inventory.replication_histogram or {}) > 0 then
-    local parts = {}
-    for _, key in ipairs(sorted_keys(inventory.replication_histogram)) do
-      parts[#parts + 1] = string.format("replication %s x%s", tostring(key),
-        num_text(inventory.replication_histogram[key]))
-    end
-    table.sort(parts)
-    lines[#lines + 1] = "Partitions by replication factor: " .. table.concat(parts, ", ")
-  end
-  if #(inventory.leader_load or {}) > 0 then
-    local parts = {}
-    for _, leader in ipairs(sorted_keys(inventory.leader_load)) do
-      parts[#parts + 1] = string.format("node %s leads %s", num_text(leader),
-        plural(inventory.leader_load[leader], "partition"))
-    end
-    lines[#lines + 1] = "Leadership: " .. fmt_list(parts, 10)
-  end
-  local bad_total = 0
-  for _, row in ipairs(inventory.rows) do
-    bad_total = bad_total + (row.under_replicated or 0) + (row.offline or 0) + (row.empty_isr or 0)
-  end
-  lines[#lines + 1] = string.format("Partitions needing attention: %d", bad_total)
-  return lines
-end
-
-function report.internal_section(inventory)
-  local lines = {}
-  for _, row in ipairs(inventory.rows or {}) do
-    if row.is_internal then
-      lines[#lines + 1] = string.format("%s: %s, replication %s", tostring(row.name),
-        plural(row.partition_count, "partition"), tostring(row.replication_max or "?"))
-      lines[#lines + 1] = "    " .. (row.internal_note or
-        "an internal topic whose name is not in this script's knowledge base")
-    end
-  end
-  if #lines == 0 then lines[#lines + 1] = "No internal topic was disclosed." end
-  return lines
-end
-
-function report.config_section(capacity, cfg)
-  local lines = {}
-  if capacity.skipped then
-    return { "Configuration was not read: " .. tostring(capacity.skipped),
-      "DescribeConfigs is a read-only API, but it takes a resource list, so the script only calls it when "
-        .. "the operator asked for it." }
-  end
-  if not capacity.answered then
-    return { capacity.skipped or (capacity.error and tostring(capacity.error)) or "DescribeConfigs was not answered." }
-  end
-  if #(capacity.resources or {}) == 0 then
-    return { string.format("DescribeConfigs answered without returning a resource (%s).",
-      tostring(capacity.error or "no resource in the response")) }
-  end
-  local by_resource = {}
-  for _, row in ipairs(capacity.notable or {}) do
-    local key = string.format("%s [%s]", tostring(row.resource), tostring(row.resource_type))
-    by_resource[key] = by_resource[key] or {}
-    by_resource[key][#by_resource[key] + 1] = row
-  end
-  for _, key in ipairs(sorted_keys(by_resource)) do
-    local rows = by_resource[key]
-    lines[#lines + 1] = key
-    local printed, hidden = 0, 0
-    for _, row in ipairs(rows) do
-      if printed >= cfg.max_configs then
-        hidden = hidden + 1
-      else
-        local value = tostring(row.rendered)
-        if row.value ~= nil and #value > 60 then value = string.sub(value, 1, 57) .. "..." end
-        lines[#lines + 1] = string.format("    %-34s %-24s %s%s", tostring(row.name), value,
-          tostring(row.source or "source not returned"),
-          row.is_sensitive and " [sensitive]" or (row.operator_set and " [operator-set]" or " [default]"))
-        if row.meaning then lines[#lines + 1] = "        meaning: " .. row.meaning end
-        printed = printed + 1
+  local metrics = inventory.metrics or {}
+  local lines = {
+    string.format("%s: %s user, %s internal, %s, %s",
+      plural(metrics.topics, "topic"), num_text(metrics.user_topics), num_text(metrics.internal_topics),
+      plural(metrics.partitions, "partition"), plural(metrics.replicas, "replica")),
+    string.format("Replication factor histogram: %s", fmt_list((function()
+      local parts = {}
+      for factor, count in pairs(metrics.replication or {}) do
+        parts[#parts + 1] = string.format("%s x %s", num_text(factor), num_text(count))
       end
-    end
-    if hidden > 0 then lines[#lines + 1] = string.format("    (%d further value(s); raise kafka.max-configs)",
-      hidden) end
+      table.sort(parts)
+      return parts
+    end)(), 8)),
+    string.format("Topic errors in the response: %s", num_text(metrics.topic_errors or 0)),
+  }
+  if not inventory.answered then
+    return { "The inventory was not read: " .. tostring(inventory.error or "no answer") }
   end
-  if #(capacity.sensitive or {}) > 0 then
-    lines[#lines + 1] = string.format("Values that should have been withheld: %s",
-      fmt_list((function()
-        local names = {}
-        for _, row in ipairs(capacity.sensitive) do
-          names[#names + 1] = tostring(row.resource) .. "/" .. tostring(row.name)
-        end
-        return names
-      end)(), 8))
+  lines[#lines + 1] = string.format("%-34s %-6s %-5s %-5s %-9s %-8s %s",
+    "Topic", "Parts", "RF", "ISR-", "Offline", "Internal", "Id")
+  for index = 1, math.min(#inventory.rows, cfg.max_topics) do
+    local row = inventory.rows[index]
+    local short_id = row.topic_id and string.sub(row.topic_id, 1, 12) or "-"
+    lines[#lines + 1] = string.format("%-34s %-6s %-5s %-5s %-9s %-8s %s",
+      string.sub(tostring(row.name), 1, 34), num_text(row.partitions), num_text(row.replication_factor),
+      num_text(row.under_replicated), num_text(row.offline_replicas),
+      row.internal and "yes" or "no", short_id)
+    if row.error_code and row.error_code ~= 0 then
+      lines[#lines + 1] = string.format("    the broker answered %s for this topic",
+        tostring(row.error_name))
+    end
+    if row.partitions_without_leader > 0 or row.empty_isr > 0 then
+      lines[#lines + 1] = string.format("    %s without a leader, %s with an empty in-sync set",
+        num_text(row.partitions_without_leader), num_text(row.empty_isr))
+    end
+  end
+  if #inventory.rows > cfg.max_topics then
+    lines[#lines + 1] = string.format("  (%d further topic(s) not shown; raise kafka.max-topics)",
+      #inventory.rows - cfg.max_topics)
+  end
+  return lines
+end
+
+function report.internal_section(internal)
+  if internal.count == 0 then
+    return { "No internal topic was in the response: either the cluster runs without them or the "
+      .. "listing did not include them." }
+  end
+  local lines = {}
+  for _, entry in ipairs(internal.rows) do
+    if entry.knowledge then
+      lines[#lines + 1] = string.format("%s (%s, %s)", tostring(entry.row.name),
+        entry.row.partitions and plural(entry.row.partitions, "partition") or "?",
+        entry.knowledge.component)
+      lines[#lines + 1] = "    proves: " .. entry.knowledge.proves
+      lines[#lines + 1] = "    impact: " .. entry.knowledge.impact
+    else
+      lines[#lines + 1] = string.format("%s: an internal topic with no entry in this script's "
+        .. "catalogue; the name is printed for review", tostring(entry.row.name))
+    end
+  end
+  return lines
+end
+
+function report.health_section(health, inventory)
+  local lines = {}
+  if #health.conditions == 0 then
+    lines[#lines + 1] = "No under-replicated partition, offline replica, empty in-sync set or "
+      .. "leaderless partition was in the response."
+  else
+    lines[#lines + 1] = "Conditions: " .. table.concat(health.conditions, "; ")
+  end
+  if health.busiest_leader then
+    lines[#lines + 1] = string.format("Leader distribution: node %s leads %s of %s",
+      num_text(health.busiest_leader), plural(health.leader_skew, "partition"),
+      plural((inventory.metrics or {}).partitions or 0, "partition"))
+  end
+  if next(health.racks) ~= nil then
+    local parts = {}
+    for _, rack in ipairs(sorted_keys(health.racks)) do
+      parts[#parts + 1] = string.format("%s x%s", tostring(rack), num_text(health.racks[rack]))
+    end
+    lines[#lines + 1] = "Racks: " .. table.concat(parts, ", ")
+    lines[#lines + 1] = "Rack assignments are published, so a caller can tell which failure domain "
+      .. "holds a replica before deciding what to do with one broker."
+  else
+    lines[#lines + 1] = "No broker advertised a rack, so the response does not disclose a failure "
+      .. "domain layout (each replica set is still published)."
   end
   return lines
 end
 
 function report.naming_section(naming)
+  if naming.count == 0 then
+    return { "No topic name matched a sensitivity pattern." }
+  end
   local lines = {}
-  if #(naming.matches or {}) == 0 then
-    lines[#lines + 1] = "No topic name matched the sensitive patterns in this script's knowledge base."
-  else
-    for _, match in ipairs(naming.matches) do
-      lines[#lines + 1] = string.format("%s: matched '%s' (%s), %s", tostring(match.topic),
-        tostring(match.token), tostring(match.category), plural(match.partitions, "partition"))
-    end
-    local categories = {}
-    for _, category in ipairs(sorted_keys(naming.categories)) do
-      categories[#categories + 1] = string.format("%s x%d", tostring(category), naming.categories[category])
-    end
-    lines[#lines + 1] = "Categories: " .. fmt_list(categories, 8)
+  for _, match in ipairs(naming.matches) do
+    lines[#lines + 1] = string.format("%-34s %-16s %s", string.sub(tostring(match.topic), 1, 34),
+      tostring(match.category), tostring(match.why))
   end
-  if count_of(naming.environments) > 0 then
-    local parts = {}
-    for _, topic in ipairs(sorted_keys(naming.environments)) do
-      parts[#parts + 1] = string.format("%s (%s)", tostring(topic), tostring(naming.environments[topic]))
-    end
-    lines[#lines + 1] = "Environment markers: " .. fmt_list(parts, 8)
+  local parts = {}
+  for _, key in ipairs(sorted_keys(naming.categories)) do
+    parts[#parts + 1] = string.format("%s x%s", tostring(key), num_text(naming.categories[key]))
   end
-  for _, prefix in ipairs(sorted_keys(naming.internal_by_prefix)) do
-    local entry = naming.internal_by_prefix[prefix]
-    lines[#lines + 1] = string.format("Names starting with '%s': %d - %s", tostring(prefix),
-      #entry.topics, entry.note)
+  lines[#lines + 1] = "Categories: " .. table.concat(parts, ", ")
+  return lines
+end
+
+function report.config_section(configs, cfg)
+  local lines = {}
+  if configs.skipped then
+    return { "Configuration was not read: " .. tostring(configs.skipped) }
+  end
+  if not configs.broker_answered and not configs.topic_answered then
+    local reason = (configs.broker_answered == false) and "DescribeConfigs was refused or unanswered"
+      or "DescribeConfigs was not run"
+    return { reason .. ", so no setting is quoted in this report." }
+  end
+  if #configs.weak > 0 then
+    lines[#lines + 1] = "Broker settings that matter:"
+    for _, row in ipairs(configs.weak) do
+      lines[#lines + 1] = string.format("  %-42s %-28s %s", tostring(row.key),
+        #row.value > 0 and row.value or "(empty)", tostring(row.source or "-"))
+      lines[#lines + 1] = "      " .. tostring(row.why)
+    end
+  end
+  if configs.sensitive_disclosed > 0 then
+    lines[#lines + 1] = string.format("Sensitive entries returned with a value: %s",
+      plural(configs.sensitive_disclosed, "entry"))
+    for _, line in ipairs(sensitive_evidence(configs, 8)) do lines[#lines + 1] = "  " .. line end
+  end
+  if #configs.topic_rows > 0 and cfg.max_configs > 0 then
+    lines[#lines + 1] = "Topic settings read:"
+    for _, row in ipairs(configs.topic_rows) do
+      lines[#lines + 1] = string.format("  %s.%s = %s", tostring(row.topic), tostring(row.key),
+        tostring(row.value))
+    end
+  end
+  if #configs.topic_security > 0 then
+    lines[#lines + 1] = "Topics whose configuration names a credential-like key:"
+    local any = false
+    for _, row in ipairs(configs.topic_security) do
+      if #row.security > 0 then
+        any = true
+        lines[#lines + 1] = string.format("  %s: %s", tostring(row.resource),
+          table.concat(row.security, ", "))
+      end
+    end
+    if not any then lines[#lines + 1] = "  none" end
   end
   return lines
 end
 
-function report.boundary_section(boundary, records, cfg)
+function report.boundary_section(boundary, unknown, inventory)
   local lines = {}
-  local by_name = records.metadata_by_name or {}
-  if by_name.answered == false then
-    lines[#lines + 1] = string.format("The per-name request was not answered (%s).",
-      tostring(by_name.error))
-  elseif by_name.skipped then
-    lines[#lines + 1] = by_name.skipped
+  if boundary.skipped then
+    lines[#lines + 1] = "Per-name requests: " .. tostring(boundary.skipped)
   else
-    lines[#lines + 1] = string.format("Requested by name: %s; granted %s, refused %s",
-      plural(#(by_name.requested or {}), "name"), num_text(by_name.granted or 0), num_text(by_name.denied or 0))
-  end
-  if #(boundary.masks or {}) > 0 then
-    for index = 1, math.min(#boundary.masks, 12) do
-      local row = boundary.masks[index]
-      lines[#lines + 1] = string.format("mask %s: %s", tostring(row.name), tostring(row.text))
+    lines[#lines + 1] = string.format("Per-name requests: %d described, %d refused, %d not found "
+      .. "(%d name(s) were supplied by the scan rather than taken from the listing)",
+      boundary.described, boundary.refused, boundary.missing, boundary.supplied or 0)
+    for _, row in ipairs(boundary.rows or {}) do
+      lines[#lines + 1] = string.format("  %-34s %-28s %-10s %s", string.sub(tostring(row.name), 1, 34),
+        tostring(row.error_name or "no entry"), tostring(row.verdict), tostring(row.source or "-"))
+    end
+    if #boundary.hidden > 0 then
+      lines[#lines + 1] = "Hidden from the listing but described by name: " .. fmt_list(boundary.hidden, 8)
     end
   end
-  for _, row in ipairs(boundary.refused_by_name or {}) do
-    lines[#lines + 1] = "listed but refused by name: " .. row
-  end
-  for _, name in ipairs(boundary.hidden_by_name or {}) do
-    lines[#lines + 1] = "describable by name but absent from the listing: " .. tostring(name)
-  end
-  local unknown = records.metadata_unknown or {}
-  if not cfg.unknown_probe then
-    lines[#lines + 1] = "The unknown-name probe was disabled (kafka.unknown-topic-probe=false)."
-  elseif unknown.answered then
-    lines[#lines + 1] = string.format("Unknown name '%s' (allow_auto_topic_creation=false) answered %s",
-      tostring(unknown.requested), tostring(unknown.error_name or unknown.error_code))
-    if unknown.materialised then
-      lines[#lines + 1] = "The name came back as a real topic: the request flag was not honoured."
-    elseif kafka.is_authz_error(unknown.error_code) then
-      lines[#lines + 1] = "Authorization is evaluated before existence, so the caller cannot tell an existing "
-        .. "topic from a missing one."
-    else
-      lines[#lines + 1] = "The error code is the cluster's 'no such topic' answer, which makes the API an "
-        .. "existence oracle for unauthenticated callers."
+  if unknown.ran then
+    lines[#lines + 1] = string.format("Random name %s: %s (entries %s)",
+      tostring(unknown.name), tostring(unknown.error_name or unknown.verdict), num_text(unknown.entries or 0))
+    if unknown.verdict == "absent" then
+      lines[#lines + 1] = "The broker answered the existence question without credentials, which is "
+        .. "the oracle a name-guessing scan uses."
+    elseif unknown.verdict == "created" then
+      lines[#lines + 1] = "The broker created the topic although the request set "
+        .. "allow_auto_topic_creation=false."
     end
   else
-    lines[#lines + 1] = string.format("The unknown-name probe was not answered (%s).",
-      tostring(unknown.error or "no response"))
+    lines[#lines + 1] = "Random name probe: " .. tostring(unknown.skipped
+      or "disabled (kafka.unknown-probe=false)")
   end
+  lines[#lines + 1] = string.format("The listing returned %s; %s of them were re-requested by name.",
+    plural((inventory.metrics or {}).topics or 0, "topic"), num_text(boundary.requested or 0))
   return lines
 end
 
 function report.finding_section(list)
-  if #list == 0 then
-    return { "No finding: the metadata API published nothing to an unauthenticated caller." }
-  end
+  if #list == 0 then return { "No finding." } end
   local lines = {}
   for index, item in ipairs(list) do
     lines[#lines + 1] = string.format("%d. [%s] %s (%s)", index, item.severity, item.title, item.id)
     lines[#lines + 1] = "   " .. item.detail
-    for _, evidence in ipairs(item.evidence) do lines[#lines + 1] = "   evidence: " .. evidence end
+    for _, line in ipairs(item.evidence) do lines[#lines + 1] = "   evidence: " .. line end
     for _, step in ipairs(item.remediation) do
-      lines[#lines + 1] = "   fix: " .. (type(step) == "table" and step.step or tostring(step))
-      if type(step) == "table" and step.why then lines[#lines + 1] = "        why: " .. step.why end
+      if type(step) == "table" then
+        lines[#lines + 1] = "   fix: " .. step.step
+        if step.why then lines[#lines + 1] = "        why: " .. step.why end
+      else
+        lines[#lines + 1] = "   fix: " .. tostring(step)
+      end
     end
+  end
+  return lines
+end
+
+function report.value_section(list)
+  if #list == 0 then return { "Nothing was exposed, so no attack value applies." } end
+  local lines = {}
+  for _, entry in ipairs(KB.ATTACK_VALUE) do
+    lines[#lines + 1] = string.format("%s: %s", entry.exposure, entry.value)
   end
   return lines
 end
@@ -1848,6 +2109,19 @@ function report.remediation_section(list)
   return lines
 end
 
+function report.safety_section(safety)
+  local lines = {}
+  for _, check in ipairs(safety.checks or {}) do
+    lines[#lines + 1] = string.format("[%s] %s%s", check.ok and "ok" or "FAILED", check.name,
+      check.detail and (" - " .. tostring(check.detail)) or "")
+  end
+  if not safety.inventory_identical and #safety.delta == 0 then
+    lines[#lines + 1] = "The topic list could not be compared because one of the two reads was not "
+      .. "answered."
+  end
+  return lines
+end
+
 function report.rubric_section()
   local lines = {}
   for _, entry in ipairs(KB.RISK_RUBRIC) do
@@ -1856,25 +2130,28 @@ function report.rubric_section()
   return lines
 end
 
-function report.value_section(list)
-  if #list == 0 then return { "Nothing was exposed, so no attack value applies." } end
-  local lines = {}
-  for _, entry in ipairs(KB.ATTACK_VALUE) do
-    lines[#lines + 1] = string.format("%s: %s", entry.exposure, entry.value)
-  end
-  return lines
-end
-
-function report.build(cfg, host, port, records, inventory, naming, capacity, boundary, exposure, list, w)
+function report.build(cfg, host, port, records, inventory, internal, health, naming, boundary, unknown,
+  configs, exposure, safety, list, w)
   local out = stdnse.output_table()
   out["Target"] = report.target_section(cfg, host, port, w, records)
-  out["Access matrix"] = report.access_section(exposure, records)
   out["Cluster"] = report.cluster_section(inventory, records)
+  out["Access matrix"] = (function()
+    local lines = { string.format("%-28s %-12s %-8s %s", "Request", "Access", "Version", "Answer") }
+    for _, row in ipairs(exposure.rows) do
+      lines[#lines + 1] = string.format("%-28s %-12s %-8s %s", row.name, tostring(row.access),
+        row.version and ("v" .. num_text(row.version)) or "-", tostring(row.detail or "-"))
+    end
+    lines[#lines + 1] = string.format("%d of %d requests were granted a useful answer",
+      exposure.granted, exposure.total)
+    return lines
+  end)()
   out["Topic inventory"] = report.inventory_section(inventory, cfg)
-  out["Internal topics"] = report.internal_section(inventory)
-  out["Configuration"] = report.config_section(capacity, cfg)
-  out["Name intelligence"] = report.naming_section(naming)
-  out["Authorization boundary"] = report.boundary_section(boundary, records, cfg)
+  out["Internal topics"] = report.internal_section(internal)
+  out["Availability posture"] = report.health_section(health, inventory)
+  out["Name exposure"] = report.naming_section(naming)
+  out["Listing versus named requests"] = report.boundary_section(boundary, unknown, inventory)
+  out["Configuration exposure"] = report.config_section(configs, cfg)
+  out["Safety ledger"] = report.safety_section(safety)
   out["Findings"] = report.finding_section(list)
   out["Why the exposure matters"] = report.value_section(list)
   out["Remediation"] = report.remediation_section(list)
@@ -1890,7 +2167,7 @@ function report.build(cfg, host, port, records, inventory, naming, capacity, bou
     if count > 0 then summary[#summary + 1] = string.format("%s x%d", severity, count) end
   end
   out["Finding summary"] = #summary > 0 and table.concat(summary, ", ") or "no findings"
-  if not (records.negotiate and records.negotiate.answered) then
+  if not (records.negotiate and records.negotiate.answered) and not inventory.answered then
     out["Risk Level"] = "UNKNOWN"
   else
     out["Risk Level"] = worst(list, "NONE")
@@ -1906,83 +2183,125 @@ function report.build(cfg, host, port, records, inventory, naming, capacity, bou
 end
 
 ----------------------------------------------------------------------------
--- 9. Orchestration
+-- 10. Orchestration
 ----------------------------------------------------------------------------
 
--- The names asked for one at a time: the operator's list when one was given,
--- otherwise a bounded sample of what the full listing returned.
-local function select_names(cfg, inventory)
-  if cfg.topics then return cfg.topics end
+-- The names re-requested by name: a bounded sample of the listing, taken in the
+-- order the broker returned it, so the comparison between the listing and the
+-- per-name answers covers user topics and internal topics alike.
+local function sample_names(rows, limit)
   local names = {}
-  for _, row in ipairs(inventory.rows or {}) do
-    if not row.is_internal and #names < 10 then names[#names + 1] = row.name end
-  end
-  if #names == 0 then
-    for _, row in ipairs(inventory.rows or {}) do
-      if #names < 10 then names[#names + 1] = row.name end
-    end
-  end
+  for index = 1, math.min(#rows, limit) do names[#names + 1] = rows[index].name end
   return names
+end
+
+-- A topic name that is valid for Kafka (letters, digits, dot, underscore, dash,
+-- at most 249 characters) and that the script generates, so a broker that
+-- creates it is creating something no application will ever use.
+local function random_topic_name()
+  local seed = string.format("nmap-metadata-audit-%d-%06d", os.time() % 1000000, math.random(0, 999999))
+  return string.sub(seed, 1, 249)
 end
 
 action = function(host, port)
   local cfg = read_config()
-  local w = new_wire(host, port, cfg)
+  local w = Wire.new(host, port, cfg)
+  local records = { auto_create_requests = 0 }
   local out = stdnse.output_table()
-  local connected, connect_error = w:connect()
-  if not connected then
+
+  if not w.connection.sock then
     out["Risk Level"] = "UNKNOWN"
     out["Target"] = {
       string.format("Endpoint: %s:%d/tcp", host.ip or "target", port.number),
-      "Transport failure: " .. tostring(connect_error),
+      "Transport failure: " .. tostring(w.connection.last_error),
     }
     out["Method limits"] = {
-      "The TCP connection failed, so the metadata API was never reached. A TLS-only listener answers a "
+      "The TCP connection failed, so no metadata request was sent. A TLS-only listener answers a "
         .. "plaintext Kafka probe exactly like this.",
     }
     return out
   end
 
-  local records = {}
   records.negotiate = probe.negotiate(w)
-  records.metadata_all = probe.metadata_all(w)
-  local inventory = analysis.inventory(records, cfg)
-  records.metadata_by_name = probe.metadata_by_name(w, select_names(cfg, inventory))
-  records.metadata_unknown = cfg.unknown_probe and probe.metadata_unknown(w)
-    or { stage = "metadata_unknown", answered = true, skipped = "kafka.unknown-topic-probe=false" }
-  records.describe_cluster = probe.describe_cluster(w)
-  if cfg.configs then
-    local broker_ids, topic_names = {}, {}
-    for _, broker in ipairs(inventory.brokers or {}) do broker_ids[#broker_ids + 1] = broker.node_id end
-    for _, row in ipairs(inventory.rows or {}) do
-      if #topic_names < probe.MAX_CONFIG_TOPICS then topic_names[#topic_names + 1] = row.name end
-    end
-    records.describe_configs = probe.describe_configs(w, broker_ids, topic_names)
-  else
-    records.describe_configs = { stage = "describe_configs", answered = true,
-      skipped = "kafka.configs=false", results = {} }
-  end
-  records.list_groups = probe.list_groups(w)
-  w:close()
+  records.metadata_all = probe.metadata_all(w, cfg)
+  local before = analysis.inventory(records, cfg)
+  records.metadata_after = probe.metadata_all(w, cfg)
+  local after = analysis.inventory(records, cfg)
 
-  inventory = analysis.inventory(records, cfg)
-  local naming = analysis.naming(inventory, cfg)
-  local capacity = analysis.capacity(records, cfg)
-  local boundary = analysis.boundary(records, inventory)
-  local exposure = analysis.exposure(records)
-  local list = findings.evaluate(records, inventory, naming, capacity, boundary, exposure, cfg)
-
-  local result = report.build(cfg, host, port, records, inventory, naming, capacity, boundary, exposure, list, w)
-
-  if has_vulns and vulns and vulns.add then
-    for _, item in ipairs(list) do
-      if item.severity == "CRITICAL" or item.severity == "HIGH" then
-        vulns.add(host, port, item.id, item.title, {
-          format = function() return item.detail end,
-        })
+  -- The per-name sample is taken from the listing: names the broker itself
+  -- published, so the request cannot introduce a name the cluster has never
+  -- seen.
+  if cfg.named_probe and before.answered and #before.rows > 0 then
+    local source_of, names = {}, sample_names(before.rows, 8)
+    for _, name in ipairs(names) do source_of[name] = "from the listing" end
+    for _, name in ipairs(cfg.names) do
+      local seen = false
+      for _, existing in ipairs(names) do if existing == name then seen = true end end
+      if not seen then
+        names[#names + 1] = name
+        source_of[name] = "supplied by the scan"
       end
     end
+    records.metadata_named = probe.metadata_named(w, names, source_of)
+  elseif not cfg.named_probe then
+    records.metadata_named = { skipped = "the per-name probe is disabled (kafka.named-probe=false)" }
+  elseif #cfg.names > 0 then
+    local source_of, names = {}, {}
+    for _, name in ipairs(cfg.names) do
+      names[#names + 1] = name
+      source_of[name] = "supplied by the scan"
+    end
+    records.metadata_named = probe.metadata_named(w, names, source_of)
+  else
+    records.metadata_named = { skipped = "the listing was empty or was not answered" }
   end
+
+  if cfg.unknown_probe then
+    records.metadata_unknown = probe.metadata_unknown(w, random_topic_name())
+  else
+    records.metadata_unknown = { skipped = "the random-name probe is disabled (kafka.unknown-probe=false)" }
+  end
+
+  records.describe_cluster = probe.describe_cluster(w)
+
+  local config_resources = {}
+  for _, broker in ipairs((records.metadata_all or {}).brokers or {}) do
+    config_resources[#config_resources + 1] = { type = 4, name = tostring(broker.node_id) }
+  end
+  records.configs_broker = #config_resources > 0
+    and probe.describe_configs(w, config_resources, "describe_configs_brokers")
+    or { skipped = "no broker was in the metadata response" }
+  local topic_resources = {}
+  for index = 1, math.min(#before.rows, cfg.max_configs) do
+    if not before.rows[index].internal or cfg.max_configs > 0 then
+      topic_resources[#topic_resources + 1] = { type = 2, name = before.rows[index].name }
+    end
+  end
+  records.configs_topics = #topic_resources > 0
+    and probe.describe_configs(w, topic_resources, "describe_configs_topics")
+    or { skipped = cfg.max_configs == 0 and "kafka.max-configs=0" or "no topic was in the listing" }
+
+  records.list_groups = probe.list_groups(w)
+  records.auto_create_requests = (w.flags and w.flags["metadata.auto_create"]
+    and w.flags["metadata.auto_create"].true_count) or 0
+  w:close()
+
+  records.unknown = analysis.unknown_probe(records, before, cfg)
+  local health = analysis.health(before)
+  local naming = analysis.naming(before)
+  local boundary = analysis.boundary(records, before, cfg)
+  local configs = analysis.configs(records, cfg)
+  local exposure = analysis.exposure(records, before, boundary, configs, health, naming)
+  local safety = analysis.safety(records, before, cfg)
+  local internal = analysis.internal(before)
+  local list = findings.evaluate(records, before, internal, health, naming, boundary, records.unknown,
+    configs, exposure, safety, cfg)
+
+  local result = report.build(cfg, host, port, records, before, internal, health, naming, boundary,
+    records.unknown, configs, exposure, safety, list, w)
+
+  publish_findings(host, port, list)
 
   return result
 end
+

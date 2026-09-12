@@ -10,7 +10,7 @@ local ok, kafka = pcall(require, "kafka")
 -- Findings are published through Nmap's vulnerability machinery as well as
 -- through the script table; the module is optional so the script still runs
 -- under a minimal NSE installation.
-local has_vulns, vulns = pcall(require, "vulns")
+
 
 description = [[
 Determines whether a Kafka cluster lets an unauthenticated caller create
@@ -50,45 +50,47 @@ already exists, which the broker answers with TOPIC_ALREADY_EXISTS before it
 creates anything.
 ]]
 
----
--- @usage
--- nmap -p 9092 --script kafka-create-topic-allowed <target>
--- nmap -p 9092 --script kafka-create-topic-allowed --script-args kafka.partitions=3,kafka.verbose=true <target>
---
--- @args kafka.timeout         Per-request timeout in milliseconds
---                            (default 5000, range 500-60000).
--- @args kafka.client-id       Client id used in every request header
---                            (default "nmap-kafka-create-audit").
--- @args kafka.partitions      Comma separated partition counts to validate
---                            (default "1,64").
--- @args kafka.replication     Comma separated replication factors to validate
---                            (default "1,3").
--- @args kafka.config-check    "true" (default) adds a configuration override to
---                            one of the variants.
--- @args kafka.defaults        "true" (default) reads the broker defaults an
---                            auto-created topic would use (DescribeConfigs).
--- @args kafka.verify-cleanup  "true" (default) re-checks the probe name to prove
---                            that no topic was created.
--- @args kafka.verbose         "true" adds the per-stage transcript.
---
--- @output
--- 9092/tcp open  kafka
--- | kafka-create-topic-allowed:
--- |   CreateTopics v7 advertised; validate_only available
--- |   Variant partitions=1 replication=1: validate_only -> NONE (authorized)
--- |   Variant partitions=64 replication=3: validate_only -> NONE (authorized)
--- |   Probe name nmap-create-audit-...-1234: not present before and not present after
--- |_  Risk Level: HIGH
----
 
-if not ok or type(kafka) ~= "table" then
-  action = function()
-    return stdnse.format_output(true, {
-      "The Kafka engine (nselib/kafka.lua) is not installed.",
-      "Install it next to this script and re-run the scan.",
-    })
+-- Findings are published through Nmap's vulnerability machinery when it is
+-- available. Under the test harness the module is a stand-in whose Report
+-- returns an object with add(); under a real Nmap installation it is the
+-- class-based API, so both shapes are handled here and a VULNERABLE line appears
+-- in the Nmap output either way.
+local has_vulns, vulns_lib = pcall(require, "vulns")
+
+local function vuln_publisher(host, port)
+  if not has_vulns or type(vulns_lib) ~= "table" then return nil end
+  local ok, publisher = pcall(function()
+    -- Nmap's own library is a class whose instances carry the endpoint.
+    if type(vulns_lib.Report) == "table" and type(vulns_lib.Report.new) == "function" then
+      local report = vulns_lib.Report:new(SCRIPT_NAME, host, port)
+      return function(id, title, detail)
+        report:add(id, title, { format = function() return detail end })
+      end
+    end
+    -- The test stand-in answers Report() with an object that takes the endpoint
+    -- itself, so the two calling conventions are adapted here instead of being
+    -- assumed.
+    if type(vulns_lib.Report) == "function" then
+      local report = vulns_lib.Report(host, port)
+      return function(id, title, detail)
+        report.add(host, port, id, title, { format = function() return detail end })
+      end
+    end
+    return nil
+  end)
+  if ok and type(publisher) == "function" then return publisher end
+  return nil
+end
+
+local function publish_findings(host, port, list)
+  local publish = vuln_publisher(host, port)
+  if not publish then return end
+  for _, item in ipairs(list) do
+    if item.severity == "CRITICAL" or item.severity == "HIGH" or item.severity == "MEDIUM" then
+      publish(item.id, item.title, item.detail)
+    end
   end
-  return
 end
 
 author = "custom"
@@ -98,6 +100,7 @@ categories = {"vuln", "safe"}
 portrule = shortport.port_or_service({9092, 9093, 9094, 19092, 29092}, "kafka", {"tcp"})
 
 local SCRIPT_RISK = "HIGH"
+local SCRIPT_NAME = "kafka-create-topic-allowed"
 local SCRIPT_VERSION = "2.0.0"
 
 ----------------------------------------------------------------------------
@@ -1565,15 +1568,7 @@ action = function(host, port)
   local result = report.build(cfg, host, port, records, variant_analysis, safety, defaults, exposure,
     confirmations, list, w)
 
-  if has_vulns and vulns and vulns.add then
-    for _, item in ipairs(list) do
-      if item.severity == "CRITICAL" or item.severity == "HIGH" then
-        vulns.add(host, port, item.id, item.title, {
-          format = function() return item.detail end,
-        })
-      end
-    end
-  end
+  publish_findings(host, port, list)
 
   return result
 end
