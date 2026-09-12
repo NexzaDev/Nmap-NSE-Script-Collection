@@ -20,6 +20,7 @@
  *     unknownAccounts: true,        // answer unknown principals with error 6
  *     leakRealm: true,              // answer foreign realms with error 68 + the real realm
  *     tcpOnly: false,               // refuse UDP (simulates a truncated/dropped path)
+ *     udpTooBig: false,             // answer UDP with KRB_ERR_RESPONSE_TOO_BIG (52)
  *     dropFirst: 0,                 // drop the first N datagrams (timeout/retry tests)
  *     errorCode: null               // force a specific KRB-ERROR for every request
  *   }
@@ -327,6 +328,12 @@ function createMockKdc(scenario) {
       return null;
     }
     if (scenario.tcpOnly && proto === "udp") return null;
+    // A KDC that cannot fit its answer into a datagram answers with
+    // KRB_ERR_RESPONSE_TOO_BIG (52) and the client is expected to retry over
+    // TCP (RFC 4120 section 7.2.2).
+    if (scenario.udpTooBig && proto === "udp") {
+      return { raw: frame(krbError(scenario, 52, "RESPONSE_TOO_BIG"), proto) };
+    }
 
     const req = parseAsReq(payload);
     if (req.error) {
