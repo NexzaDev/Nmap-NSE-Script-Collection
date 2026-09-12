@@ -1437,9 +1437,213 @@ function transport.as_req(host, port, req_opts, probe_opts)
 end
 
 
+-- ---------------------------------------------------------------------------
+-- TGS-REQ / AP-REQ construction
+--
+-- A TGS request is what a client sends once it holds a TGT: the ticket travels
+-- inside PA-TGS-REQ as an [APPLICATION 14] AP-REQ whose authenticator is
+-- encrypted with the TGT session key. Audit scripts have two legitimate uses:
+--
+--   * with an operator supplied ticket (kerberos.ticket=hex) it observes the
+--     encryption type the KDC picks for a service principal, which is the
+--     authoritative answer to "is this SPN kerberoastable with RC4";
+--   * with a deliberately malformed ticket it exercises the KDC *lookup* path.
+--     The service principal is resolved before the ticket can be decrypted, so
+--     KDC_ERR_S_PRINCIPAL_UNKNOWN (7) versus a decryption error
+--     (KRB_AP_ERR_MODIFIED / KRB_AP_ERR_TKT_EXPIRED) discloses whether a
+--     service principal exists, without any credential.
+--
+-- Neither use modifies KDC state, obtains a usable ticket, or authenticates.
+-- ---------------------------------------------------------------------------
+
+-- Ticket ::= [APPLICATION 1] SEQUENCE { tkt-vno [0], realm [1], sname [2],
+--                                       enc-part [3] EncryptedData }
+function krb.build_ticket(opts)
+  return der.app(1, der.sequence(
+    der.ctx(0, der.integer(KRB5_PROTOCOL_VERSION)),
+    der.ctx(1, der.generalstring(opts.realm)),
+    der.ctx(2, krb.principal(opts.sname_type or NT.SRV_INST, opts.sname)),
+    der.ctx(3, der.sequence(
+      der.ctx(0, der.integer(opts.etype or 18)),
+      der.ctx(1, der.integer(opts.kvno or 2)),
+      der.ctx(2, der.octetstring(opts.cipher or string.rep("Z", 64)))
+    ))
+  ))
+end
+
+-- AP-REQ ::= [APPLICATION 14] SEQUENCE { pvno [0], msg-type [1],
+--                                        ap-options [2], ticket [3],
+--                                        authenticator [4] EncryptedData }
+function krb.build_ap_req(opts)
+  return der.app(APP.AP_REQ, der.sequence(
+    der.ctx(0, der.integer(KRB5_PROTOCOL_VERSION)),
+    der.ctx(1, der.integer(MSG.AP_REQ)),
+    der.ctx(2, der.bitstring(opts.ap_options or 0, 32)),
+    der.ctx(3, opts.ticket),
+    der.ctx(4, der.sequence(
+      der.ctx(0, der.integer(opts.auth_etype or 18)),
+      der.ctx(1, der.integer(opts.auth_kvno or 2)),
+      der.ctx(2, der.octetstring(opts.authenticator or string.rep("A", 48)))
+    ))
+  ))
+end
+
+-- KDC-REQ for a service ticket. opts: realm, sname, sname_type, etypes, nonce,
+-- ap_req, kdc_options, till, cname (omitted when a ticket is presented).
+function krb.build_tgs_req(opts)
+  local body = {
+    der.ctx(0, der.bitstring(opts.kdc_options or 0, 32)),
+    der.ctx(2, der.generalstring(opts.realm)),
+    der.ctx(3, krb.principal(opts.sname_type or NT.SRV_INST, opts.sname)),
+    der.ctx(5, der.generalizedtime(opts.till or timeutil.os_utc(0))),
+    der.ctx(7, der.integer(opts.nonce)),
+  }
+  local etypes = {}
+  for _, e in ipairs(opts.etypes or { 18, 17, 23 }) do
+    etypes[#etypes + 1] = der.integer(e)
+  end
+  body[#body + 1] = der.ctx(8, der.sequence(table.concat(etypes)))
+  if opts.cname then
+    table.insert(body, 2, der.ctx(1, krb.principal(NT.PRINCIPAL, { opts.cname })))
+  end
+
+  local fields = {
+    der.ctx(1, der.integer(KRB5_PROTOCOL_VERSION)),
+    der.ctx(2, der.integer(MSG.TGS_REQ)),
+    der.ctx(3, der.sequence(krb.padata(1, opts.ap_req))),
+    der.ctx(4, der.sequence(table.concat(body))),
+  }
+  return der.app(APP.TGS_REQ, der.sequence(table.concat(fields)))
+end
+
+-- TGS-REP ::= [APPLICATION 13] KDC-REP: same layout as AS-REP, addressed to
+-- the requested service.
+function krb.parse_tgs_rep(root)
+  local seq = krb.body(root, APP.TGS_REP)
+  if not seq then
+    return nil, "not a TGS-REP message"
+  end
+  local out = {
+    pvno = decoder.integer_value(decoder.unwrap(seq, 0)),
+    msg_type = decoder.integer_value(decoder.unwrap(seq, 1)),
+    crealm = decoder.string_value(decoder.unwrap(seq, 3)),
+  }
+  local cname = decoder.unwrap(seq, 4)
+  if cname then
+    out.cname = krb.parse_principal(cname)
+  end
+  out.ticket = krb.parse_ticket_summary(decoder.unwrap(seq, 5))
+  out.enc_part = krb.parse_encrypted_data(decoder.unwrap(seq, 6))
+  return out
+end
+
+-- Send a TGS-REQ and normalise the answer.
+function transport.tgs_req(host, port, req_opts, probe_opts)
+  local payload = krb.build_tgs_req(req_opts)
+  local data, err, meta = transport.exchange(host, port, payload, probe_opts)
+  local record = {
+    request_bytes = #payload,
+    transport = meta and meta.transport,
+    attempts = meta and meta.attempts,
+    rtt_ms = meta and meta.rtt_ms,
+    tcp_retry = meta and meta.tcp_retry,
+  }
+  if not data then
+    record.error = err or "no response"
+    return record
+  end
+  record.response_bytes = #data
+  record.response_label = krb.message_label(data)
+  local root = decoder.parse(data)
+  if not root then
+    record.error = "response is not decodable ASN.1"
+    return record
+  end
+  local tgs_rep = krb.parse_tgs_rep(root)
+  if tgs_rep then
+    record.kind = "tgs_rep"
+    record.tgs_rep = tgs_rep
+    return record
+  end
+  local krb_err = krb.parse_krb_error(root)
+  if krb_err then
+    record.kind = "krb_error"
+    record.krb_error = krb_err
+    return record
+  end
+  record.kind = "other"
+  record.error = "Kerberos message that is neither TGS-REP nor KRB-ERROR"
+  return record
+end
+
+-- ---------------------------------------------------------------------------
+-- msDS-SupportedEncryptionTypes helpers (MS-KILE / MS-ADTS)
+--
+-- The directory attribute that decides which long-term keys an account can
+-- use. Decoding it explains *why* a KDC refused or accepted an etype, and it
+-- is what the remediation advice tells the operator to change.
+-- ---------------------------------------------------------------------------
+
+function krb.decode_ms_etypes(value)
+  local out = {}
+  local function add(etype)
+    for _, existing in ipairs(out) do
+      if existing == etype then return end
+    end
+    out[#out + 1] = etype
+  end
+  if value == nil or value == 0 then
+    -- Documented as "unset": the account inherits the domain default, which
+    -- historically offers RC4 alongside AES.
+    return out
+  end
+  if bit.band(value, 0x0001) ~= 0 then add(1) end
+  if bit.band(value, 0x0002) ~= 0 then add(3) end
+  if bit.band(value, 0x0004) ~= 0 then add(23) end
+  -- Bit 0x0008 is documented as "AES128 and AES256 together"; 0x0010 and
+  -- 0x0020 select a single AES strength.
+  if bit.band(value, 0x0008) ~= 0 then add(17); add(18) end
+  if bit.band(value, 0x0010) ~= 0 then add(18) end
+  if bit.band(value, 0x0020) ~= 0 then add(17) end
+  if bit.band(value, 0x0040) ~= 0 then add(19) end
+  if bit.band(value, 0x0080) ~= 0 then add(20) end
+  table.sort(out)
+  return out
+end
+
+function krb.describe_ms_etypes(value)
+  if value == nil then
+    return "unset (account inherits the domain default, which historically includes RC4)"
+  end
+  if value == 0 then
+    return "0 (explicitly unset: the account follows the domain default)"
+  end
+  local names = {}
+  for _, etype in ipairs(krb.decode_ms_etypes(value)) do
+    names[#names + 1] = string.format("%d %s", etype, krb.etype_info(etype).name)
+  end
+  return string.format("0x%04X (%s)", value, table.concat(names, ", "))
+end
+
 M.ETYPE = ETYPE
+M.ETYPE_DEFAULT = ETYPE_DEFAULT
 M.ETYPE_OFFER_DEFAULT = ETYPE_OFFER_DEFAULT
+M.ETYPE_OFFER_WEAK = ETYPE_OFFER_WEAK
+M.ETYPE_OFFER_STRONG = ETYPE_OFFER_STRONG
+M.KRB5_ERR = KRB5_ERR
+M.PADATA = PADATA
+M.KDCOPT = KDCOPT
+M.TKTFLAG = TKTFLAG
+M.MSG = MSG
+M.APP = APP
+M.NT = NT
+M.TAG = TAG
+M.TAGNO = TAGNO
 M.SCRIPT_VERSION = SCRIPT_VERSION
+M.KRB5_PROTOCOL_VERSION = KRB5_PROTOCOL_VERSION
+M.der = der
+M.decoder = decoder
+M.timeutil = timeutil
 M.krb = krb
 M.transport = transport
 

@@ -252,12 +252,21 @@ function asRep(scenario, req, account) {
 function preauthRequired(scenario, account) {
   const etypes = account.etypes || [18, 17, 23];
   const entries = etypes.map((etype) => ({ etype, salt: account.salt || scenario.realm }));
-  const blob = methodData([
-    { type: 18, value: etypeInfo2(entries) },
-    { type: 165, value: Buffer.from([0x60, 0x00, 0x00, 0x00]) },
-  ]);
+  const entries_blob = entries.length
+    ? [{ type: 18, value: etypeInfo2(entries) }]
+    : [];
+  // PA-SUPPORTED-ENCTYPES: 32-bit little-endian bitmask, bit (etype - 1).
+  const mask = scenario.supportedMask !== undefined
+    ? scenario.supportedMask
+    : etypes.reduce((acc, e) => acc | (1 << (e - 1)), 0);
+  const maskBuf = Buffer.alloc(4);
+  maskBuf.writeUInt32LE(mask >>> 0, 0);
+  const blob = methodData([...entries_blob, { type: 165, value: maskBuf }]);
   return krbError(scenario, 25, "NEEDED_PREAUTH", blob);
 }
+
+// Etypes a plain Windows Server 2012-2019 KDC negotiates out of the box.
+const DEFAULT_ACCEPTED_ETYPES = [17, 18, 23];
 
 function utcNow() {
   const d = new Date();
@@ -318,9 +327,25 @@ function createMockKdc(scenario) {
       return { raw: frame(der.app(30, der.sequence(...parts)), proto) };
     }
 
+    // Encryption type policy (RFC 4120 section 7.5.1: KDC_ERR_ETYPE_NOSUPP).
+    // The policy decides whether the KDC can build a reply at all, so it is
+    // evaluated before the principal lookup, the way most KDCs do.
+    const accepted = (req.etypes && req.etypes.length > 0)
+      ? req.etypes.filter((e) => scenario.acceptsEtype ? scenario.acceptsEtype.includes(e)
+        : DEFAULT_ACCEPTED_ETYPES.includes(e))
+      : DEFAULT_ACCEPTED_ETYPES.slice();
+    if (accepted.length === 0) {
+      return { raw: frame(krbError(scenario, 14, "ETYPE_NOSUPP"), proto) };
+    }
+
     const name = (req.cname || "").toLowerCase();
     const account = scenario.accounts[name];
     if (!account) {
+      if (scenario.answerUnknownPrincipals) {
+        // Active Directory builds the reply before rejecting the principal, so
+        // an unknown name still discloses the realm's etype policy.
+        return { raw: frame(preauthRequired(scenario, { etypes: accepted, salt: scenario.realm }), proto) };
+      }
       return { raw: frame(krbError(scenario, 6, "PRINCIPAL_UNKNOWN"), proto) };
     }
     if (account.state === "disabled") {
