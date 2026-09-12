@@ -38,7 +38,7 @@ This is the CI gate for the whole repository.
 | Scripts < 60 lines ("stub" band) | 331 |
 | Scripts 61–300 lines ("shallow" band) | 101 |
 | Scripts ≥ 301 lines ("focused"/"deep"/"spec-depth" bands) | **0** |
-| Total lines of Lua | 25,072 (measured on this branch) |
+| Total lines of Lua | 26,617 (measured on this branch) |
 | Average lines per script | 42 |
 
 ### The depth contract, measured

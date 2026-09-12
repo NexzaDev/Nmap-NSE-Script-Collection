@@ -11,6 +11,7 @@ node tools/syntax-check.js                                   # compile + contrac
 node tools/nse-sim.js tools/tests/kerberos-asrep-roasting.test.js
 node tools/nse-sim.js tools/tests/kerberos-user-enum.test.js
 node tools/nse-sim.js tools/tests/kerberos-weak-encryption.test.js
+node tools/nse-sim.js tools/tests/kerberos-spn-probe.test.js
 node tools/repo-stats.js                                     # line counts per category
 ```
 
@@ -18,7 +19,7 @@ node tools/repo-stats.js                                     # line counts per c
 
 | Category | Status | Notes |
 |---|---|---|
-| KERBEROS | 🟡 in progress (3 / 16) | `kerberos-asrep-roasting`, `kerberos-user-enum`, `kerberos-weak-encryption` rewritten and verified; 19 integration scenarios pass |
+| KERBEROS | 🟡 in progress (4 / 16) | `kerberos-asrep-roasting`, `kerberos-user-enum`, `kerberos-weak-encryption`, `kerberos-spn-probe` rewritten and verified; 25 integration scenarios pass |
 | LDAP, SMB, RDP, ICS-SCADA, KUBERNETES, SSH, SNMP, NFS-RPC, … | ⬜ not started | still placeholder scripts; see `docs/AUDIT.md` |
 
 ## Completed scripts
@@ -27,6 +28,7 @@ node tools/repo-stats.js                                     # line counts per c
 |---|---|---:|---|---|
 | `KERBEROS/kerberos-asrep-roasting.nse` | 🔴 CRITICAL | 1,563 | `nselib/kerberos5.lua` | real AS-REQ → AS-REP/KRB-ERROR exchange; realm-leak retry; KDC error classification; PA-ETYPE-INFO2 policy extraction; lockout abort; UDP→TCP fallback on `KRB_ERR_RESPONSE_TOO_BIG`; crack-cost model; masked hashes by default; probe transcript; detection, verification and remediation guidance |
 | `KERBEROS/kerberos-user-enum.nse` | 🟠 HIGH | 1,567 | `nselib/kerberos5.lua` | authoritative KDC error-code decision table; calibrated baselines; confidence model (error code + fingerprint + RTT); pacing, jitter and lockout guard; wordlist support; privileged-name heuristics; log-footprint and lockout-semantics reporting |
+| `KERBEROS/kerberos-spn-probe.nse` | 🟠 HIGH | 1,566 | `nselib/kerberos5.lua` | TGS-REQ/AP-REQ construction; SPN lookup-path oracle with a calibration probe that detects normalising KDCs; service class catalogue with product mapping and value ranking; supplied-ticket inspection (shape, realm, etype, mismatch warnings); class-specific guidance, attack chains, KDC implementation behaviour table, verification recipes |
 | `KERBEROS/kerberos-weak-encryption.nse` | 🔴 CRITICAL | 1,666 | `nselib/kerberos5.lua` | one full AS-REQ negotiation per etype in the catalogue; ACCEPTED/REFUSED/UNDETERMINED classification with evidence; PA-ETYPE-INFO2 and PA-SUPPORTED-ENCTYPES decoding; msDS-SupportedEncryptionTypes mapping; offline attack cost model; platform policy matrix; CVE, detection and verification guidance |
 
 ## Depth contract status
@@ -38,11 +40,11 @@ node tools/syntax-check.js --depth        # exit 1 while any script breaches its
 | Class | Contract | Meeting it now | Still to rewrite |
 |---|---|---:|---:|
 | CRITICAL | ≥ 1,538 lines | 2 (asrep-roasting, weak-encryption) | 104 |
-| HIGH | ≥ 1,538 lines | 1 (user-enum) | 72 |
+| HIGH | ≥ 1,538 lines | 2 (user-enum, spn-probe) | 71 |
 | MEDIUM | 500–800 lines | 0 | 130 |
 | LOW | 500–800 lines | 0 | 68 |
 
-429 of the 432 scripts in the tree breach the depth rule for their class. The
+428 of the 432 scripts in the tree breach the depth rule for their class. The
 two that do not are the scripts rewritten so far; the gate is deliberately
 failing until the rest catch up, so the number cannot silently regress.
 

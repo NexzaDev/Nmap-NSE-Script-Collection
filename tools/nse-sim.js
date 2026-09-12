@@ -214,6 +214,37 @@ local function from32(x) local v = to32(x); if v >= 2147483648 then v = v - 4294
 function bit.band(a, b) return from32(to32(a) * 1 % 4294967296) * 0 + 0 end
 bit = nil
 
+-- io shim: NSE ships the standard io library, so scripts legitimately read
+-- wordlists and SPN lists with io.open. The simulator maps it onto the real
+-- filesystem through the JS bridge.
+io = {}
+function io.open(path, mode)
+  mode = mode or "r"
+  local handle, err = __nse.io_open(path, mode)
+  if not handle then return nil, err end
+  local file = { _id = handle, _closed = false }
+  function file:lines()
+    if self._closed then return nil end
+    return function()
+      local line = __nse.io_readline(self._id)
+      if line == nil then return nil end
+      return line
+    end
+  end
+  function file:read(pattern)
+    if self._closed then return nil end
+    if pattern == "*a" or pattern == "*all" or pattern == nil then
+      return __nse.io_readall(self._id)
+    end
+    return __nse.io_readline(self._id)
+  end
+  function file:close() self._closed = true; __nse.io_close(self._id); return true end
+  file.write = function() return nil, "read-only simulator filesystem" end
+  return file
+end
+function io.write(...) return true end
+function io.stderr_write(...) return true end
+
 __nse.push_debug = push_debug
 __nse.fmt_args = fmt_args
 
@@ -358,6 +389,57 @@ function runScript(options) {
     return 0;
   });
   lua.lua_setfield(L, -2, to_luastring("advance"));
+
+  // File I/O bridge for the io shim. Paths are resolved relative to the
+  // repository root so test fixtures and wordlists work from any cwd.
+  const openFiles = new Map();
+  let nextFileId = 1;
+  const resolvePath = (p) => (path.isAbsolute(p) ? p : path.resolve(REPO_ROOT, p));
+  lua.lua_pushjsfunction(L, function (Lp) {
+    const rawPath = lua.lua_tojsstring(Lp, 1);
+    try {
+      const text = fs.readFileSync(resolvePath(rawPath), "utf8");
+      const lines = text.split(/\r?\n/);
+      const id = nextFileId++;
+      openFiles.set(id, { lines, index: 0 });
+      lua.lua_pushnumber(Lp, id);
+      lua.lua_pushnil(Lp);
+      return 2;
+    } catch (err) {
+      lua.lua_pushnil(Lp);
+      lua.lua_pushstring(Lp, to_luastring(String(err.message || err)));
+      return 2;
+    }
+  });
+  lua.lua_setfield(L, -2, to_luastring("io_open"));
+  lua.lua_pushjsfunction(L, function (Lp) {
+    const id = lua.lua_tonumber(Lp, 1);
+    const entry = openFiles.get(id);
+    if (!entry || entry.index >= entry.lines.length) {
+      lua.lua_pushnil(Lp);
+      return 1;
+    }
+    const line = entry.lines[entry.index++];
+    lua.lua_pushstring(Lp, to_luastring(line));
+    return 1;
+  });
+  lua.lua_setfield(L, -2, to_luastring("io_readline"));
+  lua.lua_pushjsfunction(L, function (Lp) {
+    const entry = openFiles.get(lua.lua_tonumber(Lp, 1));
+    if (!entry) {
+      lua.lua_pushnil(Lp);
+      return 1;
+    }
+    lua.lua_pushstring(Lp, to_luastring(entry.lines.slice(entry.index).join("\n")));
+    entry.index = entry.lines.length;
+    return 1;
+  });
+  lua.lua_setfield(L, -2, to_luastring("io_readall"));
+  lua.lua_pushjsfunction(L, function (Lp) {
+    openFiles.delete(lua.lua_tonumber(Lp, 1));
+    return 0;
+  });
+  lua.lua_setfield(L, -2, to_luastring("io_close"));
 
   const wallStart = Date.now();
   lua.lua_pushjsfunction(L, function (Lp) { lua.lua_pushnumber(Lp, Date.now() - wallStart); return 1; });

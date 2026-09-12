@@ -156,7 +156,11 @@ function principal(node) {
 }
 
 function parseAsReq(buf) {
-  if (buf[0] !== 0x6A) return { error: `expected [APPLICATION 10] AS-REQ, got 0x${buf[0].toString(16)}` };
+  // [APPLICATION 10] AS-REQ = 0x6A, [APPLICATION 12] TGS-REQ = 0x6C. Both share
+  // the KDC-REQ structure, so one parser serves both.
+  if (buf[0] !== 0x6A && buf[0] !== 0x6C) {
+    return { error: `expected [APPLICATION 10] AS-REQ or [APPLICATION 12] TGS-REQ, got 0x${buf[0].toString(16)}` };
+  }
   const root = parseDer(buf);
   if (!root.children.length) return { error: "AS-REQ has no body" };
   const body = root.children[0].num === TAG_SEQUENCE ? root.children[0] : root;
@@ -167,7 +171,7 @@ function parseAsReq(buf) {
 
   const out = {
     pvno: intVal(field(body, 1)),
-    msgType: intVal(field(body, 2)),
+    msgType: intVal(field(body, 2)) || (buf[0] === 0x6C ? 12 : 10),
     realm: strVal(field(reqBody, 2)),
     cname: principal(field(reqBody, 1)),
     sname: principal(field(reqBody, 3)),
@@ -249,6 +253,26 @@ function asRep(scenario, req, account) {
   ));
 }
 
+// TGS-REP ::= [APPLICATION 13] KDC-REP, addressed to the requested service.
+function tgsRep(scenario, req, spn) {
+  const etype = spn.etype || 23;
+  const cipher = Buffer.alloc(48).fill(0x43);
+  const ticket = der.app(1, der.sequence(
+    der.ctx(0, der.integer(5)),
+    der.ctx(1, der.generalstring(scenario.realm)),
+    der.ctx(2, principalTlv(2, [req.sname])),
+    der.ctx(3, encryptedData(spn.ticketEtype || 18, 2, Buffer.alloc(64).fill(0x44))),
+  ));
+  return der.app(13, der.sequence(
+    der.ctx(0, der.integer(5)),
+    der.ctx(1, der.integer(13)),
+    der.ctx(3, der.generalstring(scenario.realm)),
+    der.ctx(4, principalTlv(1, [req.cname || "nmap"])),
+    der.ctx(5, ticket),
+    der.ctx(6, encryptedData(etype, spn.kvno || 2, cipher)),
+  ));
+}
+
 function preauthRequired(scenario, account) {
   const etypes = account.etypes || [18, 17, 23];
   const entries = etypes.map((etype) => ({ etype, salt: account.salt || scenario.realm }));
@@ -308,6 +332,31 @@ function createMockKdc(scenario) {
     if (req.error) {
       return { error: req.error, raw: null };
     }
+    // TGS requests: the KDC resolves the service principal first and only then
+    // decrypts the presented ticket, which is the behaviour these scenarios
+    // exercise.
+    if (req.msgType === 12) {
+      if (scenario.errorCode) {
+        return { raw: frame(krbError(scenario, scenario.errorCode, `forced error ${scenario.errorCode}`), proto) };
+      }
+      const spns = scenario.spns || {};
+      const requested = req.sname;
+      const entry = Object.keys(spns).find((k) => k.toLowerCase() === (requested || "").toLowerCase());
+      if (!entry) {
+        return { raw: frame(krbError(scenario, 7, "S_PRINCIPAL_UNKNOWN"), proto) };
+      }
+      const spn = spns[entry];
+      if (spn.ticketAccepted) {
+        // A real ticket was presented: return a TGS-REP in the service's etype.
+        return { raw: frame(tgsRep(scenario, req, spn), proto) };
+      }
+      if (spn.lookupError) {
+        return { raw: frame(krbError(scenario, spn.lookupError, "LOOKUP_ERROR"), proto) };
+      }
+      // The service principal was resolved, then the ticket failed to decrypt.
+      return { raw: frame(krbError(scenario, 41, "MODIFIED"), proto) };
+    }
+
     if (scenario.errorCode) {
       return { raw: frame(krbError(scenario, scenario.errorCode, `forced error ${scenario.errorCode}`), proto) };
     }
