@@ -2637,4 +2637,336 @@ M.build_request = M.build_request
 M.exchange = M.exchange
 M.hash = M.hash
 
+----------------------------------------------------------------------------
+-- 18. Broker fingerprint knowledge base
+----------------------------------------------------------------------------
+--
+-- Fingerprinting a Kafka listener is a matter of protocol facts, not of host
+-- probing, so the tables that back the conclusion live here, next to the
+-- message definitions they are derived from. Every row states the observation
+-- it depends on: a wire advertisement gives a lower bound on the broker's
+-- generation, never a version number.
+
+function M.fmt_plural(count, singular, plural_form)
+  count = tonumber(count) or 0
+  if count == 1 then return "1 " .. singular end
+  return string.format("%d %s", count, plural_form or (singular .. "s"))
+end
+
+function M.fmt_list(values, limit, empty_text)
+  if not values or #values == 0 then return empty_text or "none" end
+  local shown = {}
+  for index = 1, math.min(#values, limit) do shown[#shown + 1] = tostring(values[index]) end
+  local text = table.concat(shown, ", ")
+  if #values > limit then text = text .. string.format(" (+%d more)", #values - limit) end
+  return text
+end
+
+----------------------------------------------------------------------------
+-- 5. Knowledge base
+----------------------------------------------------------------------------
+--
+-- The inference tables below are the whole point of the script, so each row
+-- carries the observation it depends on and what that observation actually
+-- proves. The release statements are deliberately coarse: a wire advertisement
+-- gives a lower bound ("the broker is at least this generation"), never a
+-- version number. Claiming a precise release from an API version would be a
+-- fabrication, and a report that fabricates is worse than one that stays vague.
+
+local FP = {}
+
+-- Schema generations, oldest first. Every Kafka release speaks exactly one of
+-- them; the broker's own advertisement decides which.
+FP.GENERATIONS = {
+  {
+    id = "pre-0.11",
+    label = "pre-0.11 (no ApiVersions throttle field, classic schema only)",
+    rank = 1,
+  },
+  {
+    id = "0.11+",
+    label = "0.11 or later (ApiVersions v1 carries throttle time)",
+    rank = 2,
+  },
+  {
+    id = "2.4+",
+    label = "2.4 or later (flexible/compact schemas are advertised)",
+    rank = 3,
+  },
+  {
+    id = "kraft-aware",
+    label = "KRaft-aware admin APIs (DescribeCluster endpoint types are advertised)",
+    rank = 4,
+  },
+}
+
+-- Marker rows: api_key, minimum advertised version, generation, evidence text.
+FP.MARKERS = {
+  { api = 18, version = 1, generation = "0.11+", evidence = "ApiVersions v1 or later" },
+  { api = 18, version = 3, generation = "2.4+", evidence = "ApiVersions v3 (client software name and version)" },
+  { api = 3, version = 9, generation = "2.4+", evidence = "Metadata v9 or later (compact Metadata)" },
+  { api = 1, version = 12, generation = "2.4+", evidence = "Fetch v12 or later (compact Fetch)" },
+  { api = 19, version = 5, generation = "2.4+", evidence = "CreateTopics v5 or later (compact CreateTopics)" },
+  { api = 20, version = 4, generation = "2.4+", evidence = "DeleteTopics v4 or later (compact DeleteTopics)" },
+  { api = 32, version = 4, generation = "2.4+", evidence = "DescribeConfigs v4 or later (compact DescribeConfigs)" },
+  { api = 36, version = 2, generation = "2.4+", evidence = "SaslAuthenticate v2 or later (compact SASL)" },
+  { api = 60, version = 0, generation = "2.4+", evidence = "DescribeCluster is present at all" },
+  { api = 60, version = 1, generation = "kraft-aware", evidence = "DescribeCluster v1 (endpoint type, controller endpoints)" },
+  { api = 60, version = 2, generation = "kraft-aware", evidence = "DescribeCluster v2 (fenced broker flag)" },
+}
+
+-- Internal topics are not secrets, but their names are a deployment fingerprint:
+-- each one names a component that has been installed against this cluster.
+FP.INTERNAL_TOPIC_MARKERS = {
+  { pattern = "^__consumer_offsets$", component = "consumer groups",
+    note = "committed offsets are stored on the cluster" },
+  { pattern = "^__transaction_state$", component = "transactions",
+    note = "exactly-once processing state is stored on the cluster" },
+  { pattern = "^_schemas$", component = "Confluent Schema Registry",
+    note = "the Schema Registry keeps schemas in a Kafka topic" },
+  { pattern = "^_connect%-configs$", component = "Kafka Connect",
+    note = "distributed Connect workers are configured on this cluster" },
+  { pattern = "^_connect%-offsets$", component = "Kafka Connect",
+    note = "distributed Connect source offsets are stored here" },
+  { pattern = "^_connect%-status$", component = "Kafka Connect",
+    note = "distributed Connect connector status is stored here" },
+  { pattern = "^__strimzi_", component = "Strimzi Kafka Operator",
+    note = "the cluster is managed by the Strimzi operator" },
+  { pattern = "^__amazon_msk_", component = "AWS MSK",
+    note = "the cluster is an Amazon MSK cluster" },
+  { pattern = "^_confluent", component = "Confluent Platform",
+    note = "Confluent components are installed against this cluster" },
+  { pattern = "^%__redpanda", component = "Redpanda",
+    note = "the broker identifies itself as a Redpanda deployment" },
+}
+
+-- Cluster-level authorized operations, as returned by Metadata v8+ and
+-- DescribeCluster. The bitmask says what an anonymous caller is allowed to do
+-- with the *cluster* resource, which is the shortest honest summary of the ACL
+-- posture that can be collected without credentials.
+FP.CLUSTER_OPS = {
+  { bit = 1, name = "Alter" },
+  { bit = 2, name = "Create" },
+  { bit = 4, name = "Delete" },
+  { bit = 8, name = "Describe" },
+  { bit = 16, name = "ClusterAction" },
+  { bit = 32, name = "DescribeConfigs" },
+  { bit = 64, name = "AlterConfigs" },
+  { bit = 128, name = "IdempotentWrite" },
+}
+
+local MINUS_ONE = -1
+
+local function decode_cluster_ops(mask)
+  if mask == nil or mask == MINUS_ONE then return nil end
+  local names = {}
+  for _, op in ipairs(FP.CLUSTER_OPS) do
+    local weighted = 2 ^ (op.bit / 2)
+    if math.floor((mask / weighted) % 2) == 1 then names[#names + 1] = op.name end
+  end
+  return names
+end
+
+function M.cluster_ops_text(mask)
+  if mask == nil then return "not returned by this broker version" end
+  if mask == MINUS_ONE then return "not computed (the broker withheld the mask)" end
+  local names = decode_cluster_ops(mask) or {}
+  if #names == 0 then return "none (no cluster operation is granted)" end
+  return M.fmt_list(names, 8)
+end
+
+-- The listener posture combines three independent observations: what the SASL
+-- handshake answered, what Metadata answered, and whether throttle time was
+-- reported at all.
+function M.fingerprint_listener_posture(records)
+  local sasl = records.sasl
+  local metadata = records.metadata
+  local posture = { sasl_offered = false, sasl_required = false, mechanisms = {}, notes = {} }
+  if sasl and sasl.answered and sasl.mechanisms and #sasl.mechanisms > 0 then
+    posture.sasl_offered = true
+    posture.mechanisms = sasl.mechanisms
+  end
+  if metadata and metadata.answered then
+    if metadata.access == "granted" then
+      posture.notes[#posture.notes + 1] = "queries for every topic were answered before any credential was supplied"
+    elseif metadata.access == "error" then
+      posture.sasl_required = true
+      posture.notes[#posture.notes + 1] = "even the broker inventory was refused without a credential ("
+        .. tostring(metadata.error_name) .. ")"
+    end
+  elseif posture.sasl_offered then
+    -- The handshake was answered and the next unauthenticated request was not:
+    -- that is what enforcement looks like from outside, and it must not be
+    -- mistaken for a listener that answers everyone.
+    posture.sasl_required = true
+    posture.notes[#posture.notes + 1] = "the listener accepted a SaslHandshake and then answered nothing to an "
+      .. "unauthenticated Metadata request, which is how an authenticating listener behaves"
+  end
+  -- An authorization refusal is the other half of the picture: a listener that
+  -- refuses an anonymous caller with an ACL error is checking the principal,
+  -- whether or not it announced SASL on this connection.
+  local refusals = {}
+  local function note_refusal(source, code)
+    if code and M.is_authz_error(code) then
+      refusals[#refusals + 1] = string.format("%s -> %s", source, tostring(M.error_name(code)))
+    end
+  end
+  note_refusal("Metadata", (records.metadata or {}).error_code)
+  note_refusal("DescribeCluster", (records.describe_cluster or {}).error_code)
+  note_refusal("SaslHandshake", (records.sasl or {}).error_code)
+  for _, entry in ipairs(((records.configs or {}).results or {})) do
+    note_refusal("DescribeConfigs", entry.error_code)
+  end
+  if #refusals > 0 then
+    posture.authorization_enforced = true
+    posture.sasl_required = true
+    posture.notes[#posture.notes + 1] = "an unauthenticated caller was refused with an authorization error ("
+      .. M.fmt_list(refusals, 3) .. ")"
+  end
+  if posture.sasl_offered and not posture.sasl_required then
+    posture.notes[#posture.notes + 1] = "SASL is announced but the listener also answers anonymous metadata: "
+      .. "authentication is offered, not enforced, for this protocol family"
+  end
+  if posture.sasl_offered and sasl.unknown_mechanism_error == 33 then
+    posture.notes[#posture.notes + 1] = "an unknown mechanism is refused with UNSUPPORTED_SASL_MECHANISM, "
+      .. "which is how a broker with SASL enabled answers an unknown mechanism"
+  elseif posture.sasl_offered and sasl.unknown_mechanism_error == 34 then
+    posture.notes[#posture.notes + 1] = "an unknown mechanism is refused with ILLEGAL_SASL_STATE, which a broker "
+      .. "returns when SASL negotiation is not in progress on this connection"
+  end
+  return posture
+end
+
+
+
+
+-- The highest generation any marker supports is the generation the broker is
+-- at least it. A broker that advertises no marker at all is reported as
+-- "unknown", never as old.
+function M.fingerprint_generation(records)
+  local negotiate = records.negotiate
+  local out = { markers = {}, generation = nil, rank = 0, evidence = {} }
+  if not negotiate or not negotiate.answered then
+    out.generation = "unknown"
+    out.reason = "ApiVersions was not answered, so no version advertisement was available"
+    return out
+  end
+  local versions = negotiate.versions or {}
+  for _, marker in ipairs(FP.MARKERS) do
+    local entry = versions[marker.api]
+    if entry and entry.broker_max ~= nil and entry.broker_max >= marker.version then
+      out.markers[#out.markers + 1] = {
+        api = marker.api, api_name = M.api_name(marker.api),
+        version = marker.version, generation = marker.generation,
+        evidence = marker.evidence,
+      }
+      local row
+      for _, candidate in ipairs(FP.GENERATIONS) do
+        if candidate.id == marker.generation then row = candidate end
+      end
+      if row and row.rank > out.rank then
+        out.rank = row.rank
+        out.generation = row.id
+        out.generation_label = row.label
+      end
+    end
+  end
+  if not out.generation then
+    out.generation = "pre-0.11"
+    out.generation_label = FP.GENERATIONS[1].label
+    out.reason = "no marker newer than the original protocol generation was advertised"
+  end
+  for _, marker in ipairs(out.markers) do out.evidence[#out.evidence + 1] = marker.evidence end
+  return out
+end
+
+-- Platform markers are matched against the internal topic names that were
+-- actually observed, so a marker is only reported when its topic exists.
+function M.fingerprint_platform(records)
+  local out = { markers = {}, matched_topics = {} }
+  for _, topic in ipairs((records.metadata or {}).internal or {}) do
+    for _, marker in ipairs(FP.INTERNAL_TOPIC_MARKERS) do
+      if string.find(topic.name, marker.pattern) then
+        out.markers[#out.markers + 1] = {
+          topic = topic.name, component = marker.component, note = marker.note,
+        }
+        out.matched_topics[#out.matched_topics + 1] = topic.name
+      end
+    end
+  end
+  return out
+end
+
+function M.fingerprint_topology(records)
+  local metadata = records.metadata or {}
+  local cluster = records.describe_cluster or {}
+  local out = {
+    brokers = metadata.brokers or cluster.brokers or {},
+    controller_id = metadata.controller_id or cluster.controller_id,
+    cluster_id = metadata.cluster_id or cluster.cluster_id,
+    racks = 0, brokers_with_rack = 0, internal_topics = 0, partitions = 0,
+    leaders = 0, offline_replicas = 0, leader_epochs = 0,
+  }
+  for _, broker in ipairs(out.brokers) do
+    if broker.rack and broker.rack ~= "" then out.brokers_with_rack = out.brokers_with_rack + 1 end
+  end
+  out.racks = out.brokers_with_rack
+  local controller_present = false
+  for _, broker in ipairs(out.brokers) do
+    if broker.broker_id == out.controller_id then controller_present = true end
+  end
+  out.controller_is_broker = controller_present
+  for _, topic in ipairs((metadata.topics or {})) do
+    if topic.is_internal then out.internal_topics = out.internal_topics + 1 end
+    out.partitions = out.partitions + #(topic.partitions or {})
+    for _, partition in ipairs(topic.partitions or {}) do
+      if partition.leader_id and partition.leader_id >= 0 then out.leaders = out.leaders + 1 end
+      out.offline_replicas = out.offline_replicas + #(partition.offline_replicas or {})
+      if partition.leader_epoch and partition.leader_epoch > 0 then out.leader_epochs = out.leader_epochs + 1 end
+    end
+  end
+  return out
+end
+
+function M.fingerprint_quotas(records)
+  local observed = {}
+  local function add(source, throttle)
+    if throttle and throttle > 0 then
+      observed[#observed + 1] = string.format("%s reported a throttle of %dms", source, throttle)
+    end
+  end
+  add("ApiVersions", (records.negotiate or {}).throttle_ms)
+  add("Metadata", (records.metadata or {}).throttle_ms)
+  add("DescribeCluster", (records.describe_cluster or {}).throttle_ms)
+  add("DescribeConfigs", (records.configs or {}).throttle_ms)
+  return observed
+end
+
+function M.fingerprint_config_summary(records)
+  local configs = records.configs
+  local out = { lines = {}, names = 0, sensitive = 0, read_only = 0, resources_granted = 0 }
+  if not configs or not configs.answered then
+    out.skipped = "DescribeConfigs was not answered"
+    return out
+  end
+  out.names = configs.config_count or 0
+  out.sensitive = #(configs.sensitive or {})
+  out.resources_granted = configs.granted_resources or 0
+  for _, entry in ipairs(configs.results or {}) do
+    if entry.error_code ~= 0 then
+      out.lines[#out.lines + 1] = string.format("%s %s: %s", tostring(entry.resource_type),
+        tostring(entry.resource_name), tostring(entry.error_name))
+    else
+      local names = {}
+      for _, config in ipairs(entry.configs or {}) do
+        if config.read_only then out.read_only = out.read_only + 1 end
+        names[#names + 1] = string.format("%s%s", config.name, config.is_sensitive and " (sensitive)" or "")
+      end
+      out.lines[#out.lines + 1] = string.format("%s %s: %s", tostring(entry.resource_type),
+        tostring(entry.resource_name), M.fmt_list(names, 12))
+    end
+  end
+  return out
+end
+
 return M
