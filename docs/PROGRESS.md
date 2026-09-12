@@ -25,12 +25,13 @@ node tools/coverage.js --all    # one line per script: risk, lines, required ban
 | Category | Status | Notes |
 |---|---|---|
 | KERBEROS | 🟡 in progress (13 / 16) | 6 CRITICAL/HIGH scripts at spec depth plus 7 MEDIUM/LOW in the 500-800 band; 13 suites, 95 integration scenarios, 0 failed assertions |
+| KAFKA-AMQP | 🟡 in progress (1 / 16) | 1 CRITICAL script at spec depth (`kafka-unauth-broker-access.nse`, 1,692 lines) on top of the new `nselib/kafka.lua` wire engine; 1 suite, 8 integration scenarios, 0 failed assertions |
 | LDAP, SMB, RDP, ICS-SCADA, KUBERNETES, SSH, SNMP, NFS-RPC, … | ⬜ not started | still placeholder scripts; see `docs/AUDIT.md` |
 
 ## Completed scripts
 
-`node tools/coverage.js` reports 13 scripts meeting both contracts (depth rule and
-a wired integration scenario) out of 432, all of them in KERBEROS.
+`node tools/coverage.js` reports 14 scripts meeting both contracts (depth rule and
+a wired integration scenario) out of 432: 13 in KERBEROS and 1 in KAFKA-AMQP.
 
 | Script | Risk | Lines | Shared engine | Verified behaviour |
 |---|---|---:|---|---|
@@ -47,6 +48,7 @@ a wired integration scenario) out of 432, all of them in KERBEROS.
 | `KERBEROS/kerberos-pac-validation.nse` | 🟠 HIGH | 1,566 | `nselib/kerberos5.lua` | one AS-REQ per encryption type for the machine account plus a `krbtgt` calibration oracle; PA-SUPPORTED-ENCTYPES mask decoding and an agreement check against the per-type answers; ticket facts read from issued AS-REPs (service principal, realm, etype, key version) with an AS-REP-without-pre-auth finding; an eight-entry padata capability matrix (PKINIT, S4U, FAST, cookie, PAC request); repeat sampling that detects a pool of controllers behind one name; an explicit method-limits section and the registry switches that decide what a client cannot see; 8 scenarios |
 | `KERBEROS/kerberos-fast-negotiation.nse` | 🟡 MEDIUM | 730 | `nselib/kerberos5.lua` | RFC 6113 negotiation: a plain AS-REQ, one carrying an unarmored PA-FX-FAST container, and a control name; PA-FX-FAST/PA-FX-COOKIE advertisement from the NEEDED_PREAUTH padata; not-supported / supported / required / inconsistent verdicts including a downgrade finding; salt-withholding detection; 7 scenarios |
 | `KERBEROS/kerberos-kpasswd-service.nse` | 🟡 MEDIUM | 800 | `nselib/kerberos5.lua` | RFC 3244 password service probe on 464 with its own two byte framing; synthetic AP-REQ for `kadmin/changepw` (AP-REP answer = HIGH finding); result-code decoding from the KRB-PRIV reply (success code before authentication = HIGH); version field negotiation (0xff80 vs 0xff81); per-transport measurement; 8 scenarios |
+| `KAFKA-AMQP/kafka-unauth-broker-access.nse` | 🔴 CRITICAL | 1,692 | `nselib/kafka.lua` | twelve-probe access matrix over a real Kafka wire exchange (ApiVersions version negotiation, null-topic Metadata, DescribeCluster, ListGroups, DescribeGroups, FindCoordinator, OffsetFetch, ListOffsets, DescribeConfigs, a `validate_only` CreateTopics and a generated-name DeleteTopics, SaslHandshake) plus an opt-in bounded Fetch sample; anonymous-granted, ACL-denied and unanswered requests are counted separately, a run in which nothing answered is reported as UNKNOWN rather than clean, internal topics/groups/committed offsets/sensitive configuration values are quoted as evidence, and no request in the script can change state (`validate_only=true`, delete names generated per run); 8 integration scenarios |
 
 ```bash
 node tools/syntax-check.js --depth        # exit 1 while any script breaches its class
@@ -54,13 +56,13 @@ node tools/syntax-check.js --depth        # exit 1 while any script breaches its
 
 | Class | Contract | Meeting it now | Still to rewrite |
 |---|---|---:|---:|
-| CRITICAL | ≥ 1,538 lines | 3 (asrep-roasting 1,567; cve-2020-1472-prep 1,656; weak-encryption 1,668) | 94 |
+| CRITICAL | ≥ 1,538 lines | 4 (asrep-roasting 1,567; cve-2020-1472-prep 1,656; kafka-unauth-broker-access 1,692; weak-encryption 1,668) | 93 |
 | HIGH | ≥ 1,538 lines | 3 (pac-validation 1,566; spn-probe 1,565; user-enum 1,571) | 67 |
 | MEDIUM | 500–800 lines | 4 (fast-negotiation 730; preauth-required 786; time-skew-audit 796; kpasswd-service 800) | 120 |
 | LOW | 500–800 lines | 3 (etype-negotiation 779; realm-discovery 798; tcp-udp-support 798) | 60 |
 
-419 of the 432 scripts in the tree breach the depth rule for their class. The
-thirteen that do not are the scripts rewritten so far; the gate is deliberately
+418 of the 432 scripts in the tree breach the depth rule for their class. The
+fourteen that do not are the scripts rewritten so far; the gate is deliberately
 failing until the rest catch up, so the number cannot silently regress.
 
 ## Verification layers
