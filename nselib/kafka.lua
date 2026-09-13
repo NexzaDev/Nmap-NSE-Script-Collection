@@ -2005,33 +2005,47 @@ M.HASH = {
 
 -- HMAC and PBKDF2-HMAC on top of an arbitrary hash: both SCRAM variants need
 -- them, and the SASL section below picks the pair by mechanism name.
-function M.hmac(hash, key, message)
+-- The key schedule of an HMAC does not depend on the message. PBKDF2 runs the
+-- same key thousands of times, so the pads are built once and handed back to
+-- every iteration instead of being rebuilt per call.
+function M.hmac_pads(hash, key)
   local block = hash.BLOCK
   if #key > block then key = hash.f(key) end
   key = key .. string.rep("\0", block - #key)
-  local opad, ipad = {}, {}
+  local ipad, opad = {}, {}
   for i = 1, block do
     local b = BYTE(key, i)
     ipad[i] = CHAR(bxor32(b, 0x36))
     opad[i] = CHAR(bxor32(b, 0x5C))
   end
-  return hash.f(table.concat(opad) .. hash.f(table.concat(ipad) .. message))
+  return { ipad = table.concat(ipad), opad = table.concat(opad) }
+end
+
+function M.hmac_with(hash, pads, message)
+  return hash.f(pads.opad .. hash.f(pads.ipad .. message))
+end
+
+function M.hmac(hash, key, message)
+  return M.hmac_with(hash, M.hmac_pads(hash, key), message)
 end
 
 function M.pbkdf2(hash, password, salt, iterations, dklen)
   dklen = dklen or hash.LENGTH
+  iterations = math.max(1, math.floor(tonumber(iterations) or 1))
+  local pads = M.hmac_pads(hash, password)
   local blocks = {}
-  local count = 1
-  while #table.concat(blocks) < dklen do
-    local u = M.hmac(hash, password, salt .. put_be32(count))
+  local count, total = 1, 0
+  while total < dklen do
+    local u = M.hmac_with(hash, pads, salt .. put_be32(count))
     local acc = u
     for _ = 2, iterations do
-      u = M.hmac(hash, password, u)
+      u = M.hmac_with(hash, pads, u)
       local x = {}
       for i = 1, #acc do x[i] = CHAR(bxor32(BYTE(acc, i), BYTE(u, i))) end
       acc = table.concat(x)
     end
     blocks[#blocks + 1] = acc
+    total = total + #acc
     count = count + 1
   end
   return string.sub(table.concat(blocks), 1, dklen)
@@ -2481,8 +2495,13 @@ function M.sasl.scram(hash_name, user, password, opts)
   local hash = M.HASH[hash_name]
   if not hash then return nil, "unsupported SCRAM hash " .. tostring(hash_name) end
   local client = {
-    hash = hash, hash_name = hash_name, user = user, password = password,
-    state = "initial", gs2 = opts.gs2 or "n,,", error = nil,
+    hash = hash, hash_name = hash_name, user = user, password = password, state = "initial",
+    -- A caller that only needs the broker's answer (an account-existence probe,
+    -- an error-token comparison) can ask for a proof derived at a chosen cost:
+    -- the broker validates the proof against the verifier it holds, so a proof
+    -- derived at one iteration is exactly as wrong as one derived at a million,
+    -- and the audit does not have to pay the broker's iteration setting.
+    gs2 = opts.gs2 or "n,,", error = nil, proof_iterations = opts.proof_iterations,
   }
   client.nonce = opts.nonce or (function()
     local seed = tostring(os.time()) .. tostring(os.clock()) .. tostring(#user or 0)
@@ -2523,7 +2542,9 @@ function M.sasl.scram(hash_name, user, password, opts)
       return nil, self.error
     end
     self.salt, self.iterations, self.server_nonce = salt, iterations, fields.r
-    local salted = M.pbkdf2(self.hash, self.password, salt, iterations, self.hash.LENGTH)
+    local derive = self.proof_iterations or iterations
+    self.derived_iterations = derive
+    local salted = M.pbkdf2(self.hash, self.password, salt, derive, self.hash.LENGTH)
     local client_key = M.hmac(self.hash, salted, "Client Key")
     local stored_key = self.hash.f(client_key)
     local channel = M.base64_encode(self.gs2)
@@ -2628,6 +2649,61 @@ function M.sasl_auth_scram(conn, mechanism, user, password, opts)
   out.status = verified and "accepted" or "accepted-unverified-signature"
   out.iterations = client.iterations
   out.salt = client.salt and M.base64_encode(client.salt) or nil
+  return out
+end
+
+-- One SCRAM first step, without committing to a password. The server's reply to
+-- the client-first message is the part of the exchange a mechanism audit needs:
+-- the nonce it chose, the salt it holds for that account and the iteration count
+-- it wants the client to spend. Reading it for a name that has no account is
+-- legitimate - it is the same message the server sends every client - and it is
+-- what makes salt and iteration hygiene auditable without a credential.
+function M.sasl_scram_first(conn, mechanism, user, opts)
+  opts = opts or {}
+  local handshake = M.sasl_handshake(conn, mechanism, opts)
+  local out = { mechanism = mechanism, user = user, handshake = handshake }
+  if not handshake.ok then
+    out.ok, out.error = false, handshake.error
+    return out
+  end
+  out.mechanisms = handshake.mechanisms or {}
+  for _, name in ipairs(out.mechanisms) do
+    if name == mechanism then out.offered = true end
+  end
+  if not out.offered then
+    out.ok, out.status = true, "mechanism-not-offered"
+    return out
+  end
+  local hash_name = string.match(mechanism, "SHA%-512") and "SHA-512" or "SHA-256"
+  local client, client_error = M.sasl.scram(hash_name, user, opts.password or "", opts)
+  if not client then
+    out.ok, out.error = false, client_error
+    return out
+  end
+  local step = M.sasl_authenticate(conn, client:client_first(), opts)
+  out.step = step
+  if not step.ok then
+    out.ok, out.error = false, step.error
+    return out
+  end
+  out.ok = true
+  out.error_code, out.error_name, out.error_message = step.error_code, step.error_name, step.error_message
+  out.server_token = step.auth_bytes
+  out.token_bytes = #(step.auth_bytes or "")
+  out.status = step.authenticated and "server-first" or "refused"
+  out.client = client
+  if out.status == "server-first" then
+    out.fields = {}
+    for key, value in string.gmatch(step.auth_bytes or "", "([%a]+)=([^,]+)") do
+      out.fields[key] = value
+    end
+    out.nonce, out.iterations = out.fields.r, tonumber(out.fields.i)
+    out.salt_b64 = out.fields.s
+    out.salt = out.salt_b64 and M.base64_decode(out.salt_b64) or nil
+    out.nonce_echoes_client = out.nonce ~= nil
+      and string.sub(out.nonce, 1, #client.nonce) == client.nonce
+    out.nonce_bytes = out.nonce and #out.nonce or 0
+  end
   return out
 end
 

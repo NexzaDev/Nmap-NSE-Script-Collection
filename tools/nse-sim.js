@@ -444,7 +444,7 @@ function runScript(options) {
   const wallStart = Date.now();
   lua.lua_pushjsfunction(L, function (Lp) { lua.lua_pushnumber(Lp, Date.now() - wallStart); return 1; });
   lua.lua_setfield(L, -2, to_luastring("wall_ms"));
-  lua.lua_pushnumber(L, Number(process.env.NSE_SIM_LIMIT_MS || 20000));
+  lua.lua_pushnumber(L, Number(options.limitMs || process.env.NSE_SIM_LIMIT_MS || 20000));
   lua.lua_setfield(L, -2, to_luastring("limit_ms"));
 
   // Debug level / script args / vuln capture are plain Lua tables filled by JS
@@ -625,6 +625,12 @@ function runScenario(scenario) {
     port: scenario.port,
     host: scenario.host,
     debugLevel: scenario.debugLevel || 0,
+    // A script may be correct and still exceed the default wall clock under
+    // fengari: an audit that derives SCRAM proofs at a broker's iteration count
+    // spends seconds per exchange in an interpreter that is two orders of
+    // magnitude slower than the C Lua an operator runs. Scenarios that do
+    // cryptographic work declare their own budget.
+    limitMs: scenario.limitMs,
     mock,
   });
   result.requests = (mock.state && mock.state.requests) || [];

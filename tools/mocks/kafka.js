@@ -20,7 +20,8 @@
  *   brokers, clusterId, controllerId, topics, groups, offsets, configs,
  *   apiVersions, versionCaps, anonymousAllowed, saslRequired, mechanisms, tls, tlsAlert,
  *   tlsJunk, dropApis, protocolMap, reauthMs,
- *   plainCredentials, acceptAnyPlain, scramCredentials, scramSalt, scramIterations,
+ *   plainCredentials, acceptAnyPlain, scramCredentials, scramSalt, scramRandomSalt,
+ *   scramSaltPerExchange, scramUniformErrors, scramIterations,
  *   allowCreateTopics, createValidationError, deleteBehaviour, records,
  *   baseOffset, highWatermark, throttleMs, negotiateError,
  *   dropFirst, silent, truncateBytes, idleAfter, faultOnApi
@@ -856,14 +857,31 @@ function createMockKafka(scenario = {}) {
   }
 
   function scramServerStep(payload, hash) {
-    if (!state.scram) {
-      const bare = payload.startsWith("n,,") ? payload.slice(3) : payload;
+    // GS2 header + client-first bare: "n,," (or "y,," / "p=..,,") is the start
+    // of an exchange, and an audit that reads the salt for several names starts
+    // one per name without ever sending a client-final. The simulator has no
+    // socket identity to key SASL state on, so a client-first always begins a
+    // fresh exchange here; a broker would key it to the connection.
+    const clientFirst = /^[ny],/.test(payload) || payload.startsWith("p=");
+    if (!state.scram || clientFirst) {
+      // The client-first bare name starts after the GS2 header, which ends at
+      // the second comma ("n,,", "y,,", "p=tls-server-end-point,,"): the bare
+      // name is what the client signature covers, so slicing it wrong would
+      // make every genuine proof look invalid.
+      const secondComma = payload.indexOf(",", payload.indexOf(",") + 1);
+      const bare = secondComma >= 0 ? payload.slice(secondComma + 1) : payload;
       const fields = Object.fromEntries(bare.split(",").map((kv) => kv.split("=")));
       // A per-user random salt is the property that stops the server-first
       // message from answering "does this user exist?".
-      const salt = scenario.scramRandomSalt
-        ? crypto.createHash("sha256").update(String(fields.n) + String(Date.now())).digest().subarray(0, 16)
-        : Buffer.from(scenario.scramSalt || "nse-mock-salt", "utf8");
+      // Three salt behaviours, three real deployments: a fixed salt shared by
+      // every account (the anti-pattern), a stable per-account salt (RFC 5802),
+      // and a salt that changes per exchange (a server no client could use).
+      const salt = scenario.scramSaltPerExchange
+        ? crypto.createHash("sha256").update(String(fields.n) + String(Date.now()) + String(Math.random()))
+          .digest().subarray(0, 16)
+        : scenario.scramRandomSalt
+          ? crypto.createHash("sha256").update(String(fields.n)).digest().subarray(0, 16)
+          : Buffer.from(scenario.scramSalt || "nse-mock-salt", "utf8");
       const iterations = scenario.scramIterations || 4096;
       const serverNonce = `${fields.r}srvmock`;
       state.scram = {
@@ -879,7 +897,10 @@ function createMockKafka(scenario = {}) {
     const expected = (scenario.scramCredentials || {})[user];
     state.scram = null;
     if (expected === undefined) {
-      return { code: STATUS.SASL_AUTHENTICATION_FAILED, bytes: Buffer.from("e=unknown-user", "latin1"), user };
+      // A hardened broker answers "wrong password" for a name it does not know,
+      // so the exchange cannot be used to enumerate accounts.
+      const token = scenario.scramUniformErrors ? "e=invalid-proof" : "e=unknown-user";
+      return { code: STATUS.SASL_AUTHENTICATION_FAILED, bytes: Buffer.from(token, "latin1"), user };
     }
     if (!fields.r || fields.r !== session.serverNonce) {
       return { code: STATUS.SASL_AUTHENTICATION_FAILED, bytes: Buffer.from("e=nonce-mismatch", "latin1"), user };
@@ -891,8 +912,15 @@ function createMockKafka(scenario = {}) {
     const authMessage = `${session.clientFirstBare},${session.serverFirst},${finalNoProof}`;
     const clientSignature = crypto.createHmac(hash, storedKey).update(authMessage).digest();
     const proof = Buffer.from(fields.p || "", "base64");
-    let matches = proof.length === clientSignature.length;
-    for (let i = 0; matches && i < proof.length; i += 1) matches = proof[i] === clientSignature[i];
+    // RFC 5802 server side: ClientKey = ClientProof XOR ClientSignature and the
+    // broker holds H(ClientKey), so the proof is checked by recovering the key
+    // from it - comparing the proof with the signature would reject every
+    // genuine client.
+    const recoveredKey = Buffer.alloc(proof.length);
+    for (let i = 0; i < proof.length; i += 1) recoveredKey[i] = proof[i] ^ clientSignature[i];
+    const recoveredStored = crypto.createHash(hash).update(recoveredKey).digest();
+    let matches = recoveredStored.length === storedKey.length;
+    for (let i = 0; matches && i < recoveredStored.length; i += 1) matches = recoveredStored[i] === storedKey[i];
     if (!matches) {
       return { code: STATUS.SASL_AUTHENTICATION_FAILED, bytes: Buffer.from("e=invalid-proof", "latin1"), user };
     }
