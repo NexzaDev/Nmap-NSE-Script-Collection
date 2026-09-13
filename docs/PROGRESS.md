@@ -25,15 +25,15 @@ node tools/coverage.js --all    # one line per script: risk, lines, required ban
 | Category | Status | Notes |
 |---|---|---|
 | KERBEROS | 🟡 in progress (13 / 16) | 6 CRITICAL/HIGH scripts at spec depth plus 7 MEDIUM/LOW in the 500-800 band; 13 suites, 95 integration scenarios, 0 failed assertions |
-| KAFKA-AMQP | 🟡 in progress (7 / 16) | 5 CRITICAL/HIGH scripts at spec depth (`kafka-metadata-topic-leak.nse` 2,307, `kafka-unauth-broker-access.nse` 1,724, `kafka-create-topic-allowed.nse` 1,574, `kafka-anonymous-consumer-group.nse` 1,572, `kafka-delete-topic-allowed.nse` 1,556) plus two LOW scripts (`kafka-controller-epoch-leak.nse` 800, `kafka-broker-fingerprint.nse` 753) on top of the 3,085-line `nselib/kafka.lua` wire engine and its 1,240-line mock; 9 suites, 71 integration scenarios, 0 failed assertions |
+| KAFKA-AMQP | 🟡 in progress (8 / 16) | 5 CRITICAL/HIGH scripts at spec depth (`kafka-metadata-topic-leak.nse` 2,307, `kafka-unauth-broker-access.nse` 1,724, `kafka-create-topic-allowed.nse` 1,574, `kafka-anonymous-consumer-group.nse` 1,572, `kafka-delete-topic-allowed.nse` 1,556), one MEDIUM (`kafka-plain-auth-over-cleartext.nse` 799) and two LOW scripts (`kafka-controller-epoch-leak.nse` 800, `kafka-broker-fingerprint.nse` 753) on top of the 3,085-line `nselib/kafka.lua` wire engine, the 386-line `nselib/tlsprobe.lua` handshake probe and a 1,313-line mock; 8 script suites plus 2 engine unit suites, 83 scenarios, 0 failed assertions |
 | LDAP, SMB, RDP, ICS-SCADA, KUBERNETES, SSH, SNMP, NFS-RPC, … | ⬜ not started | still placeholder scripts; see `docs/AUDIT.md` |
 
 ## Completed scripts
 
-`node tools/coverage.js` reports 20 scripts meeting both contracts (depth rule and
-a wired integration scenario) out of 432: 13 in KERBEROS and 7 in KAFKA-AMQP.
-The integration battery is 22 suites and 166 scenarios with 0 failed assertions,
-and `node tools/syntax-check.js` compiles 435 files (435 OK, 0 errors) with 126 of
+`node tools/coverage.js` reports 21 scripts meeting both contracts (depth rule and
+a wired integration scenario) out of 432: 13 in KERBEROS and 8 in KAFKA-AMQP.
+The integration battery is 23 suites and 178 scenarios with 0 failed assertions,
+and `node tools/syntax-check.js` compiles 436 files (436 OK, 0 errors) with 128 of
 them performing real network I/O.
 
 | Script | Risk | Lines | Shared engine | Verified behaviour |
@@ -57,6 +57,7 @@ them performing real network I/O.
 | `KAFKA-AMQP/kafka-create-topic-allowed.nse` | 🟠 HIGH | 1,574 | `nselib/kafka.lua` | measures the creation permission without ever creating anything: every CreateTopics carries `validate_only=true`, the error code is interpreted as proof of the authorization check (a validation error means the ACL let the request through, because Kafka authorizes before validating), a variant matrix sweeps partitions x replication x a configuration override, a second name confirms that the grant generalises, and the probe name is checked before and after; a pre-0.11 broker is never sent a creating request (the script names an existing topic and reads TOPIC_ALREADY_EXISTS); findings for anonymous create, ACL-refused create, validation-only refusal, a topic created in spite of the flag (CRITICAL), auto-creation, weak new-topic defaults and an observed quota; 13 integration scenarios |
 | `KAFKA-AMQP/kafka-delete-topic-allowed.nse` | 🟠 HIGH | 1,556 | `nselib/kafka.lua` | measures the deletion permission without deleting anything: DeleteTopics is only ever asked about names the script generated and verified absent, the v6 topic-id form is exercised with a random id, and DeleteRecords is sent with offset 0 on a bounded sample of existing topics - below every log start offset, so no record can be eligible while the DELETE ACL is still consulted; the topic list is read before and after and every request the engine sends is checked against the inventory, so a deletion by this scan would be reported as a critical incident rather than hidden; findings for the name path, the topic-id path, record deletion in scope, internal topics, weak defaults, controller-dependent answers and observed quotas; 12 integration scenarios |
 | `KAFKA-AMQP/kafka-anonymous-consumer-group.nse` | 🔴 CRITICAL | 1,572 | `nselib/kafka.lua` | walks the consumer-group plane unauthenticated: ListGroups (with the v4 state filter), batched DescribeGroups, FindCoordinator and OffsetFetch with a null topic list, then ListOffsets to turn committed offsets into lag; decodes the opaque ConsumerProtocol bytes the broker hands out, so the report names the subscribed topics, the user data, the generation, the rack and the exact partitions each member owns; findings for anonymous group access, member identity disclosure, assignment disclosure, committed offsets, lag, double ownership, rebalance churn and the coordinator map; 9 integration scenarios |
+| `KAFKA-AMQP/kafka-plain-auth-over-cleartext.nse` | 🟡 MEDIUM | 799 | `nselib/kafka.lua` + `nselib/tlsprobe.lua` | two questions asked separately: what the transport is (a real ClientHello, parsed as a ServerHello, an alert naming the refusal, a non-TLS reply, or silence — and when silence meets an answered Kafka exchange, the protocol itself is the evidence, since a TLS listener cannot also speak Kafka framing) and what the credential path is (SaslHandshake mechanism list, one `SaslAuthenticate` with a generated sentinel token unless the operator supplies one); DescribeConfigs supplies the protocol map, the enabled mechanisms and `connections.max.reauth.ms`; findings cover the cleartext PLAIN disclosure, a cleartext listener that offers only proof-based mechanisms, an unreadable mechanism list, PLAIN on a TLS listener, an accepted sentinel, an accepted operator credential, anonymous Metadata and missing re-authentication; the token is reported by structure and the password by length, and an unclassifiable transport is reported as unknown rather than as cleartext; 12 integration scenarios |
 | `KAFKA-AMQP/kafka-unauth-broker-access.nse` | 🔴 CRITICAL | 1,724 | `nselib/kafka.lua` | twelve-probe access matrix over a real Kafka wire exchange (ApiVersions version negotiation, null-topic Metadata, DescribeCluster, ListGroups, DescribeGroups, FindCoordinator, OffsetFetch, ListOffsets, DescribeConfigs, a `validate_only` CreateTopics and a generated-name DeleteTopics, SaslHandshake) plus an opt-in bounded Fetch sample; anonymous-granted, ACL-denied and unanswered requests are counted separately, a run in which nothing answered is reported as UNKNOWN rather than clean, internal topics/groups/committed offsets/sensitive configuration values are quoted as evidence, and no request in the script can change state (`validate_only=true`, delete names generated per run); 8 integration scenarios |
 
 ```bash
@@ -67,11 +68,11 @@ node tools/syntax-check.js --depth        # exit 1 while any script breaches its
 |---|---|---:|---:|
 | CRITICAL | ≥ 1,538 lines | 6 (`kafka-metadata-topic-leak.nse` 2,307; `kafka-unauth-broker-access.nse` 1,724; `kerberos-weak-encryption.nse` 1,668; `kerberos-cve-2020-1472-prep.nse` 1,656; `kafka-anonymous-consumer-group.nse` 1,572; `kerberos-asrep-roasting.nse` 1,567) | 100 |
 | HIGH | ≥ 1,538 lines | 5 (`kafka-create-topic-allowed.nse` 1,574; `kerberos-user-enum.nse` 1,571; `kerberos-pac-validation.nse` 1,566; `kerberos-spn-probe.nse` 1,565; `kafka-delete-topic-allowed.nse` 1,556) | 68 |
-| MEDIUM | 500–800 lines | 4 (`kerberos-kpasswd-service.nse` 800; `kerberos-time-skew-audit.nse` 796; `kerberos-preauth-required.nse` 786; `kerberos-fast-negotiation.nse` 730) | 126 |
+| MEDIUM | 500–800 lines | 5 (`kerberos-kpasswd-service.nse` 800; `kafka-plain-auth-over-cleartext.nse` 799; `kerberos-time-skew-audit.nse` 796; `kerberos-preauth-required.nse` 786; `kerberos-fast-negotiation.nse` 730) | 125 |
 | LOW | 500–800 lines | 5 (`kafka-controller-epoch-leak.nse` 800; `kerberos-realm-discovery.nse` 798; `kerberos-tcp-udp-support.nse` 798; `kerberos-etype-negotiation.nse` 779; `kafka-broker-fingerprint.nse` 753) | 63 |
 
-412 of the 432 scripts in the tree breach the depth rule for their class
-(`node tools/syntax-check.js --depth`, exit 1). The twenty that do not are the
+411 of the 432 scripts in the tree breach the depth rule for their class
+(`node tools/syntax-check.js --depth`, exit 1). The twenty-one that do not are the
 scripts rewritten so far; the gate is deliberately failing until the rest catch
 up, so the number cannot silently regress.
 

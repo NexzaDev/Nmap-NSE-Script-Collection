@@ -1,0 +1,12 @@
+# Explicit SPN inventory for kerberos-spn-probe.nse.
+# One principal per line, "Class/host" or "Class/host:port". A KDC mock or a real
+# realm is asked about exactly these principals, so an audit can be replayed
+# against the same list and the two runs compared.
+MSSQLSvc/db01:1433
+HTTP/intranet
+cifs/fs01
+HOST/ws01
+vpn/gw01
+# A principal that does not exist, kept in the list on purpose: the probe has to
+# report it as absent rather than drop it.
+HTTP/retired-portal

@@ -48,7 +48,7 @@ module.exports = {
       kdc: { realm: REALM, accounts: {}, spns },
       args: {
         "kerberos.realm": REALM,
-        "kerberos.spn-list": "/tmp/nse-spn-list.txt",
+        "kerberos.spn-list": "test-fixtures/kerberos-spn-list.txt",
         "kerberos.delay-ms": "0",
         "kerberos.retries": "0",
       },

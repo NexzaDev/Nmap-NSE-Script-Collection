@@ -18,8 +18,9 @@
  *
  * Scenario fields (all optional):
  *   brokers, clusterId, controllerId, topics, groups, offsets, configs,
- *   apiVersions, versionCaps, anonymousAllowed, saslRequired, mechanisms,
- *   plainCredentials, scramCredentials, scramSalt, scramIterations,
+ *   apiVersions, versionCaps, anonymousAllowed, saslRequired, mechanisms, tls, tlsAlert,
+ *   tlsJunk, dropApis, protocolMap, reauthMs,
+ *   plainCredentials, acceptAnyPlain, scramCredentials, scramSalt, scramIterations,
  *   allowCreateTopics, createValidationError, deleteBehaviour, records,
  *   baseOffset, highWatermark, throttleMs, negotiateError,
  *   dropFirst, silent, truncateBytes, idleAfter, faultOnApi
@@ -312,6 +313,7 @@ function createMockKafka(scenario = {}) {
     saslAttempts: [], anonymousRequests: 0, createTopicsCalls: [], deleteTopicsCalls: [],
     scram: null, lastMechanism: null,
     autoCreateRequests: 0, autoCreatedTopics: [], createdTopics: [], deleteRecordsCalls: [],
+    tlsHellos: 0, tlsHellosOnPlaintext: 0, tlsNegotiated: null,
     topicsAtStart: topics.map((t) => t.name),
   };
 
@@ -639,6 +641,11 @@ function createMockKafka(scenario = {}) {
         value: scenario.zookeeperConnect === undefined ? "" : scenario.zookeeperConnect },
       { name: "listeners", readOnly: false, sensitive: false, source: 5,
         value: scenario.listeners === undefined ? "SASL_SSL://0.0.0.0:9093" : scenario.listeners },
+      { name: "sasl.enabled.mechanisms", readOnly: false, sensitive: false, source: 5,
+        value: mechanisms.join(",") },
+      { name: "listener.security.protocol.map", readOnly: false, sensitive: false, source: 5,
+        value: scenario.protocolMap === undefined
+          ? (scenario.tls ? "SASL_SSL:9094" : "SASL_PLAINTEXT:9092") : scenario.protocolMap },
       { name: "ssl.keystore.location", readOnly: false, sensitive: false, source: 5,
         value: "/etc/kafka/ssl/kafka.keystore.jks" },
       { name: "ssl.keystore.password", readOnly: false, sensitive: true, source: 4,
@@ -649,7 +656,10 @@ function createMockKafka(scenario = {}) {
         value: String(scenario.retentionHours === undefined ? 168 : scenario.retentionHours) },
       { name: "min.insync.replicas", readOnly: false, sensitive: false, source: 5,
         value: String(scenario.minInsync === undefined ? 1 : scenario.minInsync) },
-    ];
+    ].concat(scenario.reauthMs === undefined ? [] : [
+      { name: "connections.max.reauth.ms", readOnly: false, sensitive: false, source: 5,
+        value: String(scenario.reauthMs) },
+    ]);
   }
 
   // Topic settings: retention is the number that decides how much data a leak
@@ -849,7 +859,11 @@ function createMockKafka(scenario = {}) {
     if (!state.scram) {
       const bare = payload.startsWith("n,,") ? payload.slice(3) : payload;
       const fields = Object.fromEntries(bare.split(",").map((kv) => kv.split("=")));
-      const salt = Buffer.from(scenario.scramSalt || "nse-mock-salt", "utf8");
+      // A per-user random salt is the property that stops the server-first
+      // message from answering "does this user exist?".
+      const salt = scenario.scramRandomSalt
+        ? crypto.createHash("sha256").update(String(fields.n) + String(Date.now())).digest().subarray(0, 16)
+        : Buffer.from(scenario.scramSalt || "nse-mock-salt", "utf8");
       const iterations = scenario.scramIterations || 4096;
       const serverNonce = `${fields.r}srvmock`;
       state.scram = {
@@ -901,7 +915,12 @@ function createMockKafka(scenario = {}) {
       const password = parts[2] || "";
       const expected = (scenario.plainCredentials || {})[user];
       attempt.user = user;
-      if (expected !== undefined && expected === password) {
+      if (scenario.acceptAnyPlain) {
+        // A broker that authenticates an identity it does not know: the probe
+        // credential is generated per run, so accepting it is the finding.
+        code = 0;
+        message = null;
+      } else if (expected !== undefined && expected === password) {
         code = 0;
         message = null;
       } else {
@@ -1138,8 +1157,61 @@ function createMockKafka(scenario = {}) {
     }
   }
 
+  // A TLS ClientHello is not a Kafka frame, so it is answered before any frame
+  // parsing happens. The mock can be a TLS listener (a real ServerHello, or an
+  // alert when the scenario requires a client certificate), or a plaintext
+  // listener that simply cannot answer it - which is exactly the distinction the
+  // listener audit has to make.
+  function tlsRecord(type, body) {
+    const head = Buffer.alloc(5);
+    head.writeUInt8(type, 0);
+    head.writeUInt16BE(0x0303, 1);
+    head.writeUInt16BE(body.length, 3);
+    return Buffer.concat([head, body]);
+  }
+
+  function serverHello(hello) {
+    const random = Buffer.alloc(32, 7);
+    const sessionId = Buffer.from([0]);
+    const cipher = Buffer.from([0x13, 0x01]); // TLS_AES_128_GCM_SHA256
+    const compression = Buffer.from([0]);
+    const extensions = Buffer.alloc(0);
+    const supportedVersions = Buffer.from([0x00, 0x2b, 0x00, 0x02, 0x03, 0x04]);
+    const keyShareBody = Buffer.concat([Buffer.from([0x00, 0x1d, 0x00, 0x20]), Buffer.alloc(32, 9)]);
+    const keyShare = Buffer.concat([Buffer.from([0x00, 0x33]), Buffer.from([
+      (keyShareBody.length >> 8) & 0xff, keyShareBody.length & 0xff]), keyShareBody]);
+    const all = Buffer.concat([supportedVersions, keyShare]);
+    const extensionBlock = Buffer.concat([Buffer.from([(all.length >> 8) & 0xff, all.length & 0xff]), all]);
+    const body = Buffer.concat([Buffer.from([0x03, 0x03]), random, sessionId, cipher, compression,
+      extensionBlock]);
+    const handshake = Buffer.concat([Buffer.from([2]), Buffer.from([
+      (body.length >> 16) & 0xff, (body.length >> 8) & 0xff, body.length & 0xff]), body]);
+    state.tlsHellos += 1;
+    state.tlsNegotiated = { version: 0x0304, cipher: 0x1301, hello: hello.length };
+    return { raw: tlsRecord(22, handshake) };
+  }
+
   function handle(payload) {
     state.requests.push({ bytes: payload.length, at: Date.now() });
+    if (payload.length > 5 && payload[0] === 0x16 && payload[1] === 0x03) {
+      state.tlsHelloBytes = payload.length;
+      if (scenario.tls === true || scenario.tls === "server-hello") return serverHello(payload);
+      if (scenario.tls === "junk") {
+        // A plaintext protocol that answers an unparseable prefix with an error
+        // frame of its own: something replied, and it is not a TLS record.
+        state.tlsHellosOnPlaintext = (state.tlsHellosOnPlaintext || 0) + 1;
+        return { raw: Buffer.from(scenario.tlsJunk || "HTTP/1.0 400 Bad Request\r\n\r\n", "latin1") };
+      }
+      if (scenario.tls === "alert") {
+        state.tlsHellos += 1;
+        const alert = tlsRecord(21, Buffer.from([2, scenario.tlsAlert === undefined ? 40 : scenario.tlsAlert]));
+        return { raw: alert };
+      }
+      // A plaintext listener: the hello is not a valid frame, so nothing comes
+      // back and the next plaintext request can still be answered.
+      state.tlsHellosOnPlaintext = (state.tlsHellosOnPlaintext || 0) + 1;
+      return null;
+    }
     if (scenario.changeTopicsAfterRequests
       && state.requests.length === scenario.changeTopicsAfterRequests) {
       // Models the other actor: something outside the scan changes the cluster
@@ -1185,6 +1257,7 @@ function createMockKafka(scenario = {}) {
       w.i32(correlation);
       if (apiKey !== API.API_VERSIONS && flex) w.tags();
 
+      if ((scenario.dropApis || []).includes(apiKey)) return null;
       if (apiKey === API.SASL_HANDSHAKE) {
         const mechanism = r.str();
         state.lastMechanism = mechanism;
