@@ -202,16 +202,27 @@ function readFieldValue(buf, state) {
   }
 }
 
+// A field table whose declared length does not fit in what arrived is a
+// truncated table, not a crash: the parser reports what it could read and marks
+// the result, which is what a broker does when a client sends it nonsense.
 function readTable(buf, offset) {
+  const table = {};
+  if (!buf || buf.length < offset + 4) return { table, offset: buf ? buf.length : 0, truncated: true };
   const length = buf.readUInt32BE(offset);
   const state = { offset: offset + 4 };
-  const end = state.offset + length;
-  const table = {};
+  const end = Math.min(state.offset + length, buf.length);
+  const truncated = state.offset + length > buf.length;
   while (state.offset < end) {
+    if (state.offset + 1 > buf.length) break;
     const nameLength = buf[state.offset];
+    if (state.offset + 1 + nameLength > buf.length) break;
     const name = buf.subarray(state.offset + 1, state.offset + 1 + nameLength).toString("latin1");
     state.offset += 1 + nameLength;
-    table[name] = readFieldValue(buf, state);
+    try {
+      table[name] = readFieldValue(buf, state);
+    } catch (error) {
+      return { table, offset: state.offset, truncated: true, error: error.message };
+    }
   }
   return { table, offset: end };
 }
@@ -399,20 +410,39 @@ function createMockRabbitMQ(options = {}) {
     return methodFrame(20, 40, channel, body);
   }
 
+  // A PLAIN response is "\0user\0password" exactly: two separators. Anything
+  // else is not a PLAIN response, and treating it as one is how a permissive
+  // backend turns a malformed probe into a session.
   function parsePlain(response) {
     const text = response.toString("latin1");
     const parts = text.split("\0");
     if (parts.length === 3) return { user: parts[1], password: parts[2], form: "PLAIN" };
-    if (parts.length === 2) return { user: parts[0], password: parts[1], form: "PLAIN-short" };
-    return { user: text, password: "", form: "PLAIN-odd" };
+    return { user: text, password: "", form: "PLAIN-malformed", malformed: true };
   }
 
   function parseAmqplain(response) {
     const parsed = readTable(response, 0);
-    return { user: parsed.table.LOGIN, password: parsed.table.PASSWORD, form: "AMQPLAIN" };
+    const table = parsed.table || {};
+    if (parsed.truncated || table.LOGIN === undefined) {
+      return { user: "", password: "", form: "AMQPLAIN-malformed", malformed: true };
+    }
+    return { user: table.LOGIN, password: table.PASSWORD, form: "AMQPLAIN" };
   }
 
   function credentialsAccepted(user, password, mechanism) {
+    // The mechanisms that carry no password are accepted or refused by their own
+    // configuration: the anonymous plugin has its own account, and EXTERNAL
+    // depends on what the transport proved.
+    if (mechanism === "ANONYMOUS") {
+      return scenario.acceptAnonymous
+        ? { ok: true, reason: "the anonymous plugin accepts the connection" }
+        : { ok: false, code: 403, reason: "anonymous access is disabled" };
+    }
+    if (mechanism === "EXTERNAL") {
+      return scenario.acceptExternal
+        ? { ok: true, reason: "the transport identity was accepted" }
+        : { ok: false, code: 403, reason: "no transport identity is configured" };
+    }
     if (scenario.acceptAnyPassword) return { ok: true, reason: "the broker accepts any password" };
     if (scenario.acceptAnonymous) return { ok: true, reason: "the broker allows anonymous access" };
     // A broker does not accept an identity it does not know: with no account
@@ -504,9 +534,35 @@ function createMockRabbitMQ(options = {}) {
     const response = readLongString(packet.args, offset);
     offset = response.offset;
     const locale = readShortString(packet.args, offset);
-    const parsed = mechanism.value === "AMQPLAIN"
-      ? parseAmqplain(response.value)
-      : parsePlain(response.value);
+    // Each mechanism carries its response in its own shape: AMQPLAIN a field
+    // table, ANONYMOUS and EXTERNAL the identity as plain bytes, PLAIN the
+    // NUL-separated triple.
+    let parsed;
+    if (mechanism.value === "AMQPLAIN") parsed = parseAmqplain(response.value);
+    else if (mechanism.value === "ANONYMOUS") {
+      parsed = { user: response.value.toString("utf8"), password: "", form: "ANONYMOUS" };
+    } else if (mechanism.value === "EXTERNAL") {
+      parsed = { user: response.value.toString("utf8"), password: "", form: "EXTERNAL" };
+    } else parsed = parsePlain(response.value);
+    if (parsed.malformed) {
+      // A response that is not well formed for the mechanism it claims: the
+      // ordinary broker refuses it, and a backend that accepts it is the finding
+      // the shape probe is looking for. It is recorded as an attempt either way.
+      state.amqpAttempts.push({ mechanism: mechanism.value, form: parsed.form, user: parsed.user,
+        passwordBytes: 0, responseBytes: response.value.length, locale: locale.value,
+        malformed: true, clientProduct: clientProperties.table.product });
+      state.lastMechanism = mechanism.value;
+      state.authFailures.push({ user: parsed.user, mechanism: mechanism.value, reason: "malformed response" });
+      if (!scenario.acceptMalformed) {
+        return { raw: scenario.authenticationFailureClose
+          ? connectionClose(403, "ACCESS_REFUSED - malformed SASL response", 10, 11)
+          : Buffer.alloc(0) };
+      }
+      state.authenticated = { user: parsed.user || scenario.anonymousUser || "anonymous",
+        mechanism: mechanism.value };
+      const tune = Buffer.concat([u16(scenario.channelMax), u32(scenario.frameMax), u16(scenario.heartbeat)]);
+      return { raw: methodFrame(10, 30, 0, tune) };
+    }
     const attempt = {
       mechanism: mechanism.value,
       form: parsed.form,
@@ -713,6 +769,13 @@ function createMockRabbitMQ(options = {}) {
       if (packet.classId === 50 && packet.methodId === 10) {
         const reply = handleQueueDeclare(packet);
         if (reply && reply.raw) replies.push(reply.raw);
+        continue;
+      }
+      if (packet.classId === 60 && packet.methodId === 10) {
+        // basic.qos is answered on the channel and touches no queue, so it is a
+        // legitimate liveness question rather than a state change.
+        state.qosRequests = (state.qosRequests || 0) + 1;
+        replies.push(methodFrame(60, 11, packet.channel, Buffer.alloc(0)));
         continue;
       }
       if (packet.classId === 60 && packet.methodId === 70) {

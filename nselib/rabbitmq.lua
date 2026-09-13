@@ -803,6 +803,10 @@ function sasl_response(mechanism, user, password)
   if upper == "AMQPLAIN" then return amqplain_response(user, password) end
   if upper == "EXTERNAL" then return external_response(password) end
   if upper == "RABBIT-CR-DEMO" then return plain_response(user, password) end
+  -- ANONYMOUS carries the identity the client asks to be logged in as, and an
+  -- empty response is legal: the broker's anonymous plugin then applies its
+  -- configured anonymous_login_user and anonymous_login_tag.
+  if upper == "ANONYMOUS" then return tostring(user or "") end
   return nil, "no response is implemented for " .. tostring(mechanism)
 end
 
@@ -993,7 +997,15 @@ function M.handshake(host, port, opts)
     return out
   end
 
-  local response, response_err = sasl_response(mechanism, opts.user, opts.password)
+  -- A raw response bypasses the mechanism encoders, which is what a shape probe
+  -- needs: it asks what the broker does with a response that is malformed for the
+  -- mechanism it claims to be using.
+  local response, response_err
+  if opts.raw_response ~= nil then
+    response, response_err = opts.raw_response, nil
+  else
+    response, response_err = sasl_response(mechanism, opts.user, opts.password)
+  end
   if not response then
     stage("sasl", tostring(response_err), false)
     out.error = response_err
@@ -1012,6 +1024,7 @@ function M.handshake(host, port, opts)
     return out
   end
   out.response_bytes = #response
+  out.raw_response = opts.raw_response ~= nil
   out.password_bytes = opts.password and #tostring(opts.password) or 0
   out.user = opts.user
   stage("connection.start-ok", string.format("%s with a %d byte response for %s", tostring(mechanism),
@@ -1174,9 +1187,15 @@ function M.probe_queue(conn, channel, vhost, name, opts)
     out.missing = is_missing_resource(out.close.reply_code)
     return out
   end
+  -- A queue.declare refusal arrives as a channel.close, and it carries the same
+  -- reply code a connection.close would: 404 means the lookup was allowed and the
+  -- queue is absent, 403 means the permission was refused. Both verdicts are set
+  -- here so every caller sees the same shape whichever frame carried the code.
   out.close = close_fields(reply.args)
-  out.reply_code = out.close.reply_code
+  out.reply_code, out.reply_name = out.close.reply_code, out.close.reply_name
   out.channel_closed = true
+  out.refused = is_authorization_refusal(out.close.reply_code)
+  out.missing = is_missing_resource(out.close.reply_code)
   return out
 end
 
