@@ -50,9 +50,72 @@
 
 ## 📖 Project Overview
 
-A comprehensive, enterprise-grade collection of **432 custom Nmap NSE (Nmap Scripting Engine) scripts** across **27 distinct protocol categories**, specialized in **defensive security auditing**, vulnerability identification, and infrastructure posture assessment. Engineered to deliver deep, actionable insights across web services, databases, cloud metadata, IoT/SCADA protocols, identity architectures, and container ecosystems without causing denial-of-service or executing destructive payloads.
+A collection of **432 Nmap NSE (Nmap Scripting Engine) scripts** across **27 protocol categories**, specialized in **defensive security auditing**, vulnerability identification, and infrastructure posture assessment: no denial of service, no destructive payloads, no exploitation.
 
-**💻 Project Language:** Lua 100% | **Total Categories:** 27 | **Total Scripts:** 432 | **Lines of Lua:** 18,243
+**💻 Project Language:** Lua 100% | **Total Categories:** 27 | **Total Scripts:** 432
+
+---
+
+## ✅ Verification status (measured, not claimed)
+
+Everything in this section is produced by the repository's own harness — no number below is typed by hand:
+
+```bash
+node tools/syntax-check.js                # compiles every script with the real Lua 5.3 compiler
+node tools/repo-stats.js                  # per-category line counts measured from the tree
+node tools/nse-sim.js tools/tests/<x>.test.js   # runs a script against a mock protocol service
+```
+
+| Measurement | Value |
+|---|---|
+| Scripts that compile (Lua 5.3 + luaparse, both front-ends) | see `node tools/syntax-check.js` output |
+| Scripts that perform **real network I/O** | see harness output |
+| Scripts still awaiting their rewrite | see `docs/AUDIT.md` |
+
+**Rewrites completed so far** (each verified end-to-end against a mock service, not just compiled):
+
+| Category | Script | Risk | Verified behaviour |
+|---|---|---|---|
+| KERBEROS | `kerberos-asrep-roasting.nse` | 🔴 CRITICAL | real AS-REQ/AS-REP exchange, realm-leak retry, KDC error classification, lockout abort, UDP→TCP fallback, crack-cost model | 9 scenarios |
+| KERBEROS | `kerberos-cve-2020-1472-prep.nse` | 🔴 CRITICAL | Kerberos characterisation plus a real SMB2 → DCE/RPC → MS-NRPC probe of the Netlogon secure channel: `NetrServerReqChallenge` + `NetrServerAuthenticate3` with an all-zero credential, `vulns.add` on acceptance, opnum 30 never marshalled, masked server credential | 14 scenarios |
+| KERBEROS | `kerberos-weak-encryption.nse` | 🔴 CRITICAL | one AS-REQ per encryption type, PA-ETYPE-INFO2 and PA-SUPPORTED-ENCTYPES decoding, offline attack cost model, policy matrix | 5 scenarios |
+| KERBEROS | `kerberos-user-enum.nse` | 🟠 HIGH | KDC error-code decision table, calibrated baselines, confidence model, pacing and lockout guard | 5 scenarios |
+| KERBEROS | `kerberos-spn-probe.nse` | 🟠 HIGH | TGS-REQ/AP-REQ construction, SPN lookup-path oracle with calibration, service class catalogue, supplied-ticket inspection | 6 scenarios |
+| KERBEROS | `kerberos-time-skew-audit.nse` | 🟡 MEDIUM | multi-sample clock measurement with RTT correction, real RFC 5905 SNTP cross-check, grading with headroom | 7 scenarios |
+| KERBEROS | `kerberos-preauth-required.nse` | 🟡 MEDIUM | AS-REQ without padata, exempt/covered/unknown/revoked classification, calibration against a name that cannot exist, lockout-aware abort | 7 scenarios |
+| KERBEROS | `kerberos-kpasswd-service.nse` | 🟡 MEDIUM | RFC 3244 probe on 464 with its own two byte framing, synthetic AP-REQ, KRB-PRIV result-code decoding, version negotiation | 8 scenarios |
+| KAFKA-AMQP | `kafka-controller-epoch-leak.nse` | 🟢 LOW | unauthenticated metadata exposure: controller identity and placement, cluster id, broker/rack inventory, partition + replica + ISR map, leader epochs and offline replicas; findings for under-replication (MEDIUM), offline replicas, leader concentration and a controller election caught by repeated sampling | 7 scenarios |
+| KAFKA-AMQP | `kafka-plain-auth-over-cleartext.nse` | 🟡 MEDIUM | is the listener's SASL/PLAIN exchange protected? A real TLS ClientHello is sent first and the reply is parsed as a record (ServerHello version/cipher, alert name, or a non-TLS answer); when the hello goes unanswered the Kafka exchange itself decides, because a TLS listener cannot also speak Kafka framing. SaslHandshake reads the offered mechanisms, one `SaslAuthenticate` carries a generated sentinel token (a supplied credential only when the operator passes one), the token is described by structure and the password by length, DescribeConfigs supplies the protocol map and `connections.max.reauth.ms`, and the report states what an observer on the path receives; `nselib/tlsprobe.lua` performs the handshake probe | 12 scenarios |
+| KAFKA-AMQP | `kafka-sasl-mechanism-audit.nse` | 🟡 MEDIUM | the SASL catalogue and the SCRAM exchange audited from outside: SaslHandshake reads every mechanism the listener offers (each one classified as password-sending, proof-based, delegated or opaque), then three server-first messages - read for two names that cannot be accounts and one repeat, each on its own connection - expose the salt length and fingerprint, the salt policy (shared across names, per-account, or changing per exchange) and the iteration count graded against the RFC 5802 floor; one exchange is completed per candidate name to compare the broker's failure token against the token it gives a name that cannot exist, which is the account-enumeration oracle; a supplied credential completes a genuine proof and verifies the server signature; the completion probes send a well-formed proof derived at one iteration rather than at the advertised count, so the audit stays cheap against a broker that asks for 100000 rounds, and the report states that limit | 12 scenarios |
+| KAFKA-AMQP | `kafka-broker-fingerprint.nse` | 🟢 LOW | wire-only fingerprint: API-version markers date the schema generation (classic → 2.4 flexible → KRaft admin APIs), DescribeCluster placement separates KRaft from ZooKeeper, racks/controller/topology inventory, platform detection from real internal topic names, SASL posture from handshake plus refusal behaviour, quota throttling detection, configuration by name and sensitivity only | 8 scenarios |
+| KAFKA-AMQP | `kafka-metadata-topic-leak.nse` | 🔴 CRITICAL | real Metadata census: null-topic listing, per-name re-query for the authorization boundary, a generated-name probe with `allow_auto_topic_creation=false` that tells an existence oracle from an authorization-first refusal, DescribeConfigs with byte/duration rendering and sensitive-value detection, DescribeCluster; findings for the inventory, internal-topic exposure (with the meaning of each internal topic), configuration and secret disclosure, sensitive names, replica topology, topic ids, operation masks, listing-vs-ACL inconsistency, under-replication/offline/ISR-less partitions and leader concentration; the `kafka.names` argument tests a supplied name against the listing to find a topic the wildcard hid | 12 scenarios |
+| KAFKA-AMQP | `kafka-delete-topic-allowed.nse` | 🟠 HIGH | deletion permission measured without deleting: DeleteTopics names only generated names that were verified absent, the v6 topic-id form is probed with a random id, DeleteRecords is sent at offset 0 (below every log start offset, so nothing is eligible) across a bounded sample of existing topics to read the DELETE ACL, the topic list is compared before and after, and the mock asserts that no request could have deleted anything | 12 scenarios |
+| KAFKA-AMQP | `kafka-create-topic-allowed.nse` | 🟠 HIGH | creation permission measured without creating anything: every CreateTopics carries `validate_only=true`, validation errors are read as proof that the ACL let the request through (authorization runs before validation), a variant matrix sweeps partitions x replication x configuration, a second name confirms the grant is not name-shaped, and the probe name is verified absent before and after; a pre-0.11 broker is never sent a creating request | 13 scenarios |
+| KAFKA-AMQP | `kafka-anonymous-consumer-group.nse` | 🔴 CRITICAL | the consumer-group plane unauthenticated: ListGroups, batched DescribeGroups, FindCoordinator, OffsetFetch with a null topic list and ListOffsets for lag; decodes the opaque ConsumerProtocol bytes to name subscribed topics, user data, generation, rack and the partitions each member owns; findings for anonymous group access, member identity, assignments, committed offsets, lag, double ownership, rebalance churn and the coordinator map | 9 scenarios |
+| KAFKA-AMQP | `kafka-unauth-broker-access.nse` | 🔴 CRITICAL | real Kafka wire protocol: ApiVersions negotiation, null-topic Metadata, DescribeCluster, ListGroups/DescribeGroups, FindCoordinator, OffsetFetch, ListOffsets, DescribeConfigs, `validate_only` CreateTopics, generated-name DeleteTopics, SaslHandshake, plus an opt-in bounded Fetch sample; separate counts for granted / denied / unanswered families, UNKNOWN instead of "clean" when nothing answered, evidence quoting of sensitive configuration values, and state-changing requests made impossible by construction | 8 scenarios |
+| KERBEROS | `kerberos-pac-validation.nse` | 🟠 HIGH | per-etype matrix with a krbtgt calibration oracle, PA-SUPPORTED-ENCTYPES agreement check, ticket facts (service principal, realm, etype, key version), AS-REP-without-pre-auth finding, eight-type padata capability matrix, repeat sampling for pooled controllers, explicit method limits | 8 scenarios |
+| KERBEROS | `kerberos-fast-negotiation.nse` | 🟡 MEDIUM | RFC 6113 negotiation with an unarmored PA-FX-FAST request and a control name; advertisement, salt withholding, cookie and downgrade findings | 7 scenarios |
+| KERBEROS | `kerberos-realm-discovery.nse` | 🟢 LOW | foreign-realm leak probe, candidate matrix, KDC_ERR_WRONG_REALM redirect handling, confidence grading | 6 scenarios |
+| KERBEROS | `kerberos-tcp-udp-support.nse` | 🟢 LOW | both transports measured, RFC 4120 length-prefix validation, connection reuse, error 52 fallback, engine transport as a second observation | 6 scenarios |
+| KERBEROS | `kerberos-etype-negotiation.nse` | 🟢 LOW | one AS-REQ per etype, accepted/refused/undecided verdicts, whole-catalogue preference probe | 7 scenarios |
+
+The harness fails any script that reports a result without ever touching the network. The 320 original placeholder scripts that returned a constant `"AUDITED - ... executed successfully."` string are listed in `docs/AUDIT.md` and are being replaced category by category in risk order (danger-ranked: KAFKA-AMQP → CLOUD-SSRF → LDAP → ELASTICSEARCH → … ; KERBEROS stands at 13/16 with three scripts still owed, KAFKA-AMQP at 9/16, and 22 of the 432 scripts now meet both contracts — verified by `node tools/coverage.js`, the compile gate and 24 integration suites / 190 scenarios).
+
+### 🔧 Shared protocol engines (`nselib/`)
+
+Rich protocols are implemented once, in a reviewed library, instead of being copy-pasted into every script:
+
+| Module | Contents |
+|---|---|
+| `nselib/kerberos5.lua` | ASN.1 DER encoder/decoder (explicit and implicit tagging), KRB-ERROR/AS-REP/METHOD-DATA/ETYPE-INFO[2] codec, UDP/88 + TCP/88 transport with RFC 4120 length framing, retries and automatic UDP→TCP fallback on `KRB_ERR_RESPONSE_TOO_BIG`, KRB5 error / encryption type / PA-DATA / KDCOptions / TicketFlags registries |
+| `nselib/netlogon.lua` | SMB2 client (negotiate, anonymous session setup, `IPC$` tree connect, pipe create/write/read), NTLMSSP type 1/3 for a null session, DCE/RPC bind/request/fault PDUs with fragment reassembly, NDR encoder and reader with referent tracking, and the MS-NRPC catalogue: NEGOEX option bits, secure channel types, NTSTATUS classes, `NetrServerReqChallenge`, `NetrServerAuthenticate2/3` and their parsers. Marshals opnum 30 nowhere. |
+
+Install the module next to Nmap's other NSE libraries before using the scripts that require it:
+
+```bash
+cp nselib/*.lua "$(nmap --datadir)/nselib/"
+# or run nmap with --datadir pointing at a directory that contains nselib/
+```
 
 ---
 
@@ -163,8 +226,8 @@ Nmap-NSE-Script-Collection/
 ### 📊 Statistics
 - **Total Scripts:** 432 (16 scripts per category)
 - **Total Categories:** 27
-- **Total Lines of Code:** 18,243 Lua
-- **Security Checks:** 1,500+
+- **Measured Lines of Lua:** regenerate with `node tools/repo-stats.js` (the per-category table it prints is the source of truth for this document)
+- **Verification:** `node tools/syntax-check.js` (exit code 0 = every script compiles and passes the repository contract)
 - **Supported Nmap:** 7.40+
 
 ---

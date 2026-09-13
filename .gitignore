@@ -1,0 +1,11 @@
+# Node tooling dependencies (verification harness only)
+node_modules/
+tools/node_modules/
+package-lock.json
+tools/package-lock.json
+
+# Local scan output / scratch
+*.gnmap
+*.nmap
+*.xml
+.scan-out/
