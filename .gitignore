@@ -1,0 +1,5 @@
+.lint-report.json
+.inventory.json
+*.luac
+__pycache__/
+.DS_Store
