@@ -232,7 +232,7 @@ def main(argv):
         print("%s %-46s %5d lines  %-14s (min %d)" % (
             flag, os.path.relpath(r["path"], root), r["lines"], r["risk"], r["minimum"]))
         for problem in r["problems"]:
-            print("       - %s" % problem)
+            print(f"       - {problem}")
 
     with open(os.path.join(root, ".lint-report.json"), "w", encoding="utf-8") as fh:
         json.dump(results, fh, indent=1)
