@@ -157,11 +157,11 @@ def check_file(path, runtime, strict=False):
         else:
             chunk, err = result, None
         if chunk is None:
-            problems.append("SYNTAX: %s" % err)
+            problems.append(f"SYNTAX: {err}")
 
     for field in HEADER_FIELDS:
         if not re.search(r"^%s\s*=" % field, text, re.M):
-            problems.append("MISSING metadata field: %s" % field)
+            problems.append(f"MISSING metadata field: {field}")
     if not re.search(r"^(portrule|prerule|hostrule)\s*=", text, re.M):
         problems.append("MISSING rule declaration (portrule/prerule/hostrule)")
 
@@ -175,7 +175,7 @@ def check_file(path, runtime, strict=False):
         elif const and used:
             risk = const.group(1).strip()
     if risk not in RISKS:
-        problems.append("MISSING/unknown Risk Level: %r" % risk)
+        problems.append(f"MISSING/unknown Risk Level: {risk!r}")
 
     body_start = text.find("action = function")
     if body_start == -1:
@@ -183,12 +183,12 @@ def check_file(path, runtime, strict=False):
 
     comments = find_comments(text)
     for lineno, line in comments:
-        problems.append("COMMENT at line %d: %s" % (lineno, line.strip()[:80]))
+        problems.append(f"COMMENT at line {lineno}: {line.strip()[:80]}")
 
     minimum = RISKS.get(risk, 800)
     size_ok = count >= minimum
     if not size_ok:
-        problems.append("SIZE: %d lines < required %d for %s" % (count, minimum, risk))
+        problems.append(f"SIZE: {count} lines < required {minimum} for {risk}")
 
     return {
         "path": path,
@@ -226,14 +226,13 @@ def main(argv):
 
     bad = [r for r in results if r["problems"]]
     short = [r for r in results if not r["size_ok"]]
-    print("checked: %d scripts, %d with problems, %d below size target" % (
-        len(results), len(bad), len(short)))
+    print(f"checked: {len(results)} scripts, {len(bad)} with problems, {len(short)} below size target")
     for r in results:
         flag = "OK  " if not r["problems"] else "FAIL"
         print("%s %-46s %5d lines  %-14s (min %d)" % (
             flag, os.path.relpath(r["path"], root), r["lines"], r["risk"], r["minimum"]))
         for problem in r["problems"]:
-            print("       - %s" % problem)
+            print(f"       - {problem}")
 
     with open(os.path.join(root, ".lint-report.json"), "w", encoding="utf-8") as fh:
         json.dump(results, fh, indent=1)

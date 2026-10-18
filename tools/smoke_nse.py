@@ -1160,7 +1160,7 @@ def main(argv):
             elif not quiet:
                 print("OK   %-46s%s" % (rel, out or ""))
 
-    print("smoke: %d scripts, %d failures (scenario=%s)" % (checked, failures, scenario))
+    print(f"smoke: {checked} scripts, {failures} failures (scenario={scenario})")
     return 1 if failures else 0
 
 
