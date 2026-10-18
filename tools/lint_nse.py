@@ -175,7 +175,7 @@ def check_file(path, runtime, strict=False):
         elif const and used:
             risk = const.group(1).strip()
     if risk not in RISKS:
-        problems.append(f"MISSING/unknown Risk Level: {risk}")
+        problems.append(f"MISSING/unknown Risk Level: {risk!r}")
 
     body_start = text.find("action = function")
     if body_start == -1:
