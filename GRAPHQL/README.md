@@ -1,6 +1,27 @@
 # 🔮 GraphQL Security Audits
 
-**16 Nmap NSE scripts** for auditing GraphQL endpoints: unauthenticated full-schema introspection, unauthenticated mutation execution (and GET-delivered mutations that bypass POST-keyed WAF/CDN/CSRF controls), unlimited alias overloading and query depth (including cyclic-type amplification), batched-query DoS, error/debug information disclosure (stack traces, file paths, database hints, trace headers), relaxed Content-Type enforcement, missing cost/complexity analysis, "Did you mean" suggestion oracles, exposed interactive IDEs (GraphiQL/Playground), Active Persisted Queries registry exposure, non-standard directive leakage via introspection, and unauthenticated realtime subscription channels (WebSocket `graphql-transport-ws` + Server-Sent Events) - plus a comprehensive endpoint-discovery map of paths, methods, transports and IDEs. Every script performs real HTTP/WS requests against a discovered or user-supplied endpoint, parses the GraphQL wire format, and reports evidence-based findings. All probes are read-only or use dummy/harmless payloads; nothing is mutated on a real target.
+**16 Nmap NSE scripts** for auditing GraphQL endpoints:
+
+**Covers:**
+
+- Unauthenticated full-schema introspection
+- Unauthenticated mutation execution (and GET-delivered mutations that bypass POST-keyed WAF/CDN/CSRF controls)
+- Unlimited alias overloading and query depth (including cyclic-type amplification)
+- Batched-query DoS
+- Error/debug information disclosure (stack traces, file paths, database hints, trace headers)
+- Relaxed Content-Type enforcement
+- Missing cost/complexity analysis
+- "Did you mean" suggestion oracles
+- Exposed interactive IDEs (GraphiQL/Playground)
+- Active Persisted Queries registry exposure
+- Non-standard directive leakage via introspection
+- Unauthenticated realtime subscription channels (WebSocket `graphql-transport-ws` + Server-Sent Events) - plus a comprehensive endpoint-discovery map of paths
+- Methods
+- Transports and IDEs
+
+Every script performs real HTTP/WS requests against a discovered or user-supplied endpoint, parses the GraphQL wire format, and reports evidence-based findings.
+
+All probes are read-only or use dummy/harmless payloads; nothing is mutated on a real target.
 
 **Ports:** any HTTP/HTTPS port serving GraphQL (80, 443, 3000, 4000, 8000, 8080, 8443, 8888, 9000 or matched `http`/`https`/`graphql` service) | **Protocol:** GraphQL over HTTP (JSON bodies, persisted-query extensions, SSE, RFC 6455 WebSocket with graphql-transport-ws/graphql-ws subprotocols) | **Total lines of Lua:** 35,261
 
@@ -10,26 +31,86 @@
 
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [graphql-introspection-enabled](#1-graphql-introspection-enabled---unauthenticated-schema-introspection) | 🔴 CRITICAL | vuln, discovery, safe | 2320 |
-| 2 | [graphql-unauth-mutation-detection](#2-graphql-unauth-mutation-detection---unauthenticated-mutation-execution) | 🔴 CRITICAL | vuln, discovery, safe | 2180 |
-| 3 | [graphql-alias-overloading](#3-graphql-alias-overloading---unlimited-alias-fanout) | 🔴 CRITICAL | vuln, safe | 2128 |
-| 4 | [graphql-batch-query-abuse](#4-graphql-batch-query-abuse---batched-query-dos) | 🔴 CRITICAL | vuln, safe | 2148 |
-| 5 | [graphql-get-mutation-bypass](#5-graphql-get-mutation-bypass---mutations-over-http-get) | 🟠 HIGH | vuln, safe | 2159 |
-| 6 | [graphql-circular-query-depth](#6-graphql-circular-query-depth---unbounded-depth-and-cyclic-types) | 🟠 HIGH | vuln, safe | 2188 |
-| 7 | [graphql-error-info-disclosure](#7-graphql-error-info-disclosure---errordebug-information-leaks) | 🟡 MEDIUM | vuln, discovery, safe | 2348 |
-| 8 | [graphql-content-type-bypass](#8-graphql-content-type-bypass---relaxed-contenttype-enforcement) | 🟡 MEDIUM | vuln, safe | 2162 |
-| 9 | [graphql-cost-analysis-bypass](#9-graphql-cost-analysis-bypass---missing-complexity-analysis) | 🟡 MEDIUM | vuln, safe | 2166 |
-| 10 | [graphql-debug-trace-exposure](#10-graphql-debug-trace-exposure---debug-mode-and-trace-headers) | 🟡 MEDIUM | vuln, discovery, safe | 2298 |
+| 1 | [graphql-alias-overloading](#1-graphql-alias-overloading---unlimited-alias-fan-out) | 🔴 CRITICAL | vuln, safe | 2128 |
+| 2 | [graphql-batch-query-abuse](#2-graphql-batch-query-abuse---batched-query-dos) | 🔴 CRITICAL | vuln, safe | 2148 |
+| 3 | [graphql-introspection-enabled](#3-graphql-introspection-enabled---unauthenticated-schema-introspection) | 🔴 CRITICAL | vuln, discovery, safe | 2320 |
+| 4 | [graphql-unauth-mutation-detection](#4-graphql-unauth-mutation-detection---unauthenticated-mutation-execution) | 🔴 CRITICAL | vuln, discovery, safe | 2180 |
+| 5 | [graphql-circular-query-depth](#5-graphql-circular-query-depth---unbounded-depth-and-cyclic-types) | 🟠 HIGH | vuln, safe | 2188 |
+| 6 | [graphql-get-mutation-bypass](#6-graphql-get-mutation-bypass---mutations-over-http-get) | 🟠 HIGH | vuln, safe | 2159 |
+| 7 | [graphql-content-type-bypass](#7-graphql-content-type-bypass---relaxed-content-type-enforcement) | 🟡 MEDIUM | vuln, safe | 2162 |
+| 8 | [graphql-cost-analysis-bypass](#8-graphql-cost-analysis-bypass---missing-complexity-analysis) | 🟡 MEDIUM | vuln, safe | 2166 |
+| 9 | [graphql-debug-trace-exposure](#9-graphql-debug-trace-exposure---debug-mode-and-trace-headers) | 🟡 MEDIUM | vuln, discovery, safe | 2298 |
+| 10 | [graphql-error-info-disclosure](#10-graphql-error-info-disclosure---errordebug-information-leaks) | 🟡 MEDIUM | vuln, discovery, safe | 2348 |
 | 11 | [graphql-field-suggestions](#11-graphql-field-suggestions---did-you-mean-enumeration-oracle) | 🟡 MEDIUM | vuln, discovery, safe | 2144 |
 | 12 | [graphql-ide-exposure](#12-graphql-ide-exposure---graphiqlplayground-exposure) | 🟡 MEDIUM | vuln, discovery, safe | 2131 |
 | 13 | [graphql-persisted-queries-audit](#13-graphql-persisted-queries-audit---apq-registry-exposure) | 🟡 MEDIUM | vuln, discovery, safe | 2144 |
-| 14 | [graphql-schema-directive-leak](#14-graphql-schema-directive-leak---nonstandard-directive-leakage) | 🟡 MEDIUM | vuln, discovery, safe | 2230 |
+| 14 | [graphql-schema-directive-leak](#14-graphql-schema-directive-leak---non-standard-directive-leakage) | 🟡 MEDIUM | vuln, discovery, safe | 2230 |
 | 15 | [graphql-subscription-websocket](#15-graphql-subscription-websocket---unauthenticated-realtime-channels) | 🟡 MEDIUM | vuln, discovery, safe | 2216 |
 | 16 | [graphql-endpoint-discovery](#16-graphql-endpoint-discovery---attack-surface-inventory) | 🟢 LOW | discovery, safe | 2299 |
 
 ---
 
-### 1. **graphql-introspection-enabled** - Unauthenticated Schema Introspection
+### 1. **graphql-alias-overloading** - Unlimited Alias Fan-out
+**Description:** Tests whether the endpoint limits the number of aliases (repeated field selections) in a single operation. Unbounded aliasing lets one request amplify resolver work N-fold behind per-request rate limiters - a classic GraphQL DoS.
+
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
+
+**What it checks:**
+- Alias-count ladder (10 / 40 / 120 / 150) on a cheap field (`__typename`) and on a typed field (`user`)
+- Verdict per level: accepted / limited (with the limiting error code) / rejected
+- Unbounded detection: ≥100 aliases accepted with no complexity error
+- Amplification note when accepted aliases are unbounded
+
+**How to Execute:**
+```bash
+nmap -p 8000 --script graphql-alias-overloading target.example.com
+nmap -p 8000 --script graphql-alias-overloading --script-args 'graphql-alias-overloading.path=/graphql' target.example.com
+```
+
+**Sample Output:**
+```
+| graphql-alias-overloading:
+|   Risk Level: 🔴 CRITICAL
+|   Status: VULNERABLE - Alias count is not limited on this endpoint
+|   Severity counts: CRITICAL=0 HIGH=1 MEDIUM=1 LOW=0 INFO=1
+|   Findings:
+|     [HIGH] Queries with more than 100 aliases are accepted without rejection
+|     [MEDIUM] Single request can amplify resolver load N-fold behind a per-request rate limit
+```
+
+---
+
+### 2. **graphql-batch-query-abuse** - Batched Query DoS
+**Description:** Determines whether the endpoint accepts JSON-array batches of operations, how many it executes in one HTTP request, and whether any size ceiling exists. Batching converts per-request rate limits into per-batch limits and multiplies backend work per request.
+
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
+
+**What it checks:**
+- Control single query, then batch of 2, then batch of 16 cheap operations
+- Response-element counting to measure the actually executed batch size
+- States: batched (n executed) / disabled (BATCH_DISABLED) / rejected / single-only
+- Implicit-ceiling detection from truncation, amplification note
+
+**How to Execute:**
+```bash
+nmap -p 8000 --script graphql-batch-query-abuse target.example.com
+nmap -p 8000 --script graphql-batch-query-abuse --script-args 'graphql-batch-query-abuse.batch_size=32' target.example.com
+```
+
+**Sample Output:**
+```
+| graphql-batch-query-abuse:
+|   Risk Level: 🔴 CRITICAL
+|   Status: VULNERABLE - Batched queries are enabled without a visible size limit
+|   Severity counts: CRITICAL=0 HIGH=0 MEDIUM=1 LOW=1 INFO=1
+|   Findings:
+|     [MEDIUM] The endpoint executes 16 operations in a single HTTP request (batching)
+|     [LOW] One request performs 16x the resolver work of a normal query (rate limit amplification)
+```
+
+---
+
+### 3. **graphql-introspection-enabled** - Unauthenticated Schema Introspection
 **Description:** Detects whether the full GraphQL schema is readable without authentication, and audits what the exposed schema contains: sensitive field names (PII/financial/credential patterns), type/field descriptions that leak internal implementation details, directive lists, and cyclic type references.
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, discovery, safe
@@ -64,7 +145,7 @@ nmap -p 8000 --script graphql-introspection-enabled --script-args 'graphql-intro
 
 ---
 
-### 2. **graphql-unauth-mutation-detection** - Unauthenticated Mutation Execution
+### 4. **graphql-unauth-mutation-detection** - Unauthenticated Mutation Execution
 **Description:** Probes whether mutation resolvers execute without an authenticated session by submitting a ladder of write operations (register, login, resetPassword, deleteAccount) with dummy credentials, and separates "resolver executed" from "resolver ran but rejected the payload" so a correctly gated API is not flagged.
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, discovery, safe
@@ -95,96 +176,7 @@ nmap -p 8000 --script graphql-unauth-mutation-detection --script-args 'graphql-u
 
 ---
 
-### 3. **graphql-alias-overloading** - Unlimited Alias Fan-out
-**Description:** Tests whether the endpoint limits the number of aliases (repeated field selections) in a single operation. Unbounded aliasing lets one request amplify resolver work N-fold behind per-request rate limiters - a classic GraphQL DoS.
-
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
-
-**What it checks:**
-- Alias-count ladder (10 / 40 / 120 / 150) on a cheap field (`__typename`) and on a typed field (`user`)
-- Verdict per level: accepted / limited (with the limiting error code) / rejected
-- Unbounded detection: ≥100 aliases accepted with no complexity error
-- Amplification note when accepted aliases are unbounded
-
-**How to Execute:**
-```bash
-nmap -p 8000 --script graphql-alias-overloading target.example.com
-nmap -p 8000 --script graphql-alias-overloading --script-args 'graphql-alias-overloading.path=/graphql' target.example.com
-```
-
-**Sample Output:**
-```
-| graphql-alias-overloading:
-|   Risk Level: 🔴 CRITICAL
-|   Status: VULNERABLE - Alias count is not limited on this endpoint
-|   Severity counts: CRITICAL=0 HIGH=1 MEDIUM=1 LOW=0 INFO=1
-|   Findings:
-|     [HIGH] Queries with more than 100 aliases are accepted without rejection
-|     [MEDIUM] Single request can amplify resolver load N-fold behind a per-request rate limit
-```
-
----
-
-### 4. **graphql-batch-query-abuse** - Batched Query DoS
-**Description:** Determines whether the endpoint accepts JSON-array batches of operations, how many it executes in one HTTP request, and whether any size ceiling exists. Batching converts per-request rate limits into per-batch limits and multiplies backend work per request.
-
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
-
-**What it checks:**
-- Control single query, then batch of 2, then batch of 16 cheap operations
-- Response-element counting to measure the actually executed batch size
-- States: batched (n executed) / disabled (BATCH_DISABLED) / rejected / single-only
-- Implicit-ceiling detection from truncation, amplification note
-
-**How to Execute:**
-```bash
-nmap -p 8000 --script graphql-batch-query-abuse target.example.com
-nmap -p 8000 --script graphql-batch-query-abuse --script-args 'graphql-batch-query-abuse.batch_size=32' target.example.com
-```
-
-**Sample Output:**
-```
-| graphql-batch-query-abuse:
-|   Risk Level: 🔴 CRITICAL
-|   Status: VULNERABLE - Batched queries are enabled without a visible size limit
-|   Severity counts: CRITICAL=0 HIGH=0 MEDIUM=1 LOW=1 INFO=1
-|   Findings:
-|     [MEDIUM] The endpoint executes 16 operations in a single HTTP request (batching)
-|     [LOW] One request performs 16x the resolver work of a normal query (rate limit amplification)
-```
-
----
-
-### 5. **graphql-get-mutation-bypass** - Mutations over HTTP GET
-**Description:** Checks whether mutations can be delivered in a GET query string (`?query=mutation {...}`) instead of a POST body. GET-delivered mutations bypass POST-keyed WAF rules, CDN body inspection and CSRF protections that assume write verbs are POST-only.
-
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- POST control mutation (establishes that the resolver runs and how it rejects dummy credentials)
-- GET probes with the same mutation in `?query=`
-- Execution vs. rejection classification per transport
-- 405/MUTATION_VIA_GET_BLOCKED classified as NOT VULNERABLE
-
-**How to Execute:**
-```bash
-nmap -p 8000 --script graphql-get-mutation-bypass target.example.com
-```
-
-**Sample Output:**
-```
-| graphql-get-mutation-bypass:
-|   Risk Level: 🟠 HIGH
-|   Status: VULNERABLE - Mutations execute over HTTP GET
-|   Severity counts: CRITICAL=1 HIGH=1 MEDIUM=0 LOW=0 INFO=1
-|   Findings:
-|     [CRITICAL] Mutation executed via GET query string (1 of 2 GET probes)
-|     [HIGH] GET-delivered mutations bypass POST-keyed WAF/CDN/CSRF controls
-```
-
----
-
-### 6. **graphql-circular-query-depth** - Unbounded Depth and Cyclic Types
+### 5. **graphql-circular-query-depth** - Unbounded Depth and Cyclic Types
 **Description:** Measures the nesting-depth ceiling with single-object cycle chains, probes list-recursive chains at shallow depth, and cross-checks the schema for cyclic type references. Unbounded depth over cyclic types is a resolver-amplification DoS channel.
 
 **Risk Level:** 🟠 HIGH | **Category:** vuln, safe
@@ -213,37 +205,36 @@ nmap -p 8000 --script graphql-circular-query-depth target.example.com
 
 ---
 
-### 7. **graphql-error-info-disclosure** - Error/Debug Information Leaks
-**Description:** Triggers a battery of error classes (syntax, unknown field, invalid enum, resolver failure, variable errors, introspection-refused) and scans every error object - message, `debug` field, path - plus raw body for stack traces, file paths, database hints, environment hints, PIDs, addresses, span ids and framework fingerprints.
+### 6. **graphql-get-mutation-bypass** - Mutations over HTTP GET
+**Description:** Checks whether mutations can be delivered in a GET query string (`?query=mutation {...}`) instead of a POST body. GET-delivered mutations bypass POST-keyed WAF rules, CDN body inspection and CSRF protections that assume write verbs are POST-only.
 
-**Risk Level:** 🟡 MEDIUM | **Category:** vuln, discovery, safe
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
 
 **What it checks:**
-- Six error-probe classes merged into one disclosure report
-- Signature scanning: stack traces, `/var/...` paths, DB drivers (psycopg2/sqlalchemy/...), env vars, PIDs, spans
-- Framework fingerprinting from error text and headers
-- Sanitized-error baseline classified as NOT VULNERABLE
+- POST control mutation (establishes that the resolver runs and how it rejects dummy credentials)
+- GET probes with the same mutation in `?query=`
+- Execution vs. rejection classification per transport
+- 405/MUTATION_VIA_GET_BLOCKED classified as NOT VULNERABLE
 
 **How to Execute:**
 ```bash
-nmap -p 8000 --script graphql-error-info-disclosure target.example.com
+nmap -p 8000 --script graphql-get-mutation-bypass target.example.com
 ```
 
 **Sample Output:**
 ```
-| graphql-error-info-disclosure:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - GraphQL errors leak implementation detail
-|   Severity counts: CRITICAL=2 HIGH=3 MEDIUM=2 LOW=1 INFO=1
+| graphql-get-mutation-bypass:
+|   Risk Level: 🟠 HIGH
+|   Status: VULNERABLE - Mutations execute over HTTP GET
+|   Severity counts: CRITICAL=1 HIGH=1 MEDIUM=0 LOW=0 INFO=1
 |   Findings:
-|     [CRITICAL] File system paths are disclosed in GraphQL errors
-|     [CRITICAL] Stack traces are included in GraphQL error responses
-|     [HIGH] Database driver/connection hints are disclosed (psycopg2, sqlalchemy)
+|     [CRITICAL] Mutation executed via GET query string (1 of 2 GET probes)
+|     [HIGH] GET-delivered mutations bypass POST-keyed WAF/CDN/CSRF controls
 ```
 
 ---
 
-### 8. **graphql-content-type-bypass** - Relaxed Content-Type Enforcement
+### 7. **graphql-content-type-bypass** - Relaxed Content-Type Enforcement
 **Description:** Sends the same cheap query under a ladder of Content-Types (application/json, form-urlencoded, text/plain, application/xml, multipart, application/graphql) and records which execute versus which are refused with 415. Servers that parse regardless of the declared type give WAF/CDN rules - which key GraphQL inspection on the header - a blind spot.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** vuln, safe
@@ -271,7 +262,7 @@ nmap -p 8000 --script graphql-content-type-bypass target.example.com
 
 ---
 
-### 9. **graphql-cost-analysis-bypass** - Missing Complexity Analysis
+### 8. **graphql-cost-analysis-bypass** - Missing Complexity Analysis
 **Description:** Tests whether a unified cost/complexity analyzer exists by probing three delivery shapes at escalating intensity - nesting depth, alias fan-out, and batched deep queries - and builds a coverage matrix. A server that limits only one shape leaves the others as open DoS channels.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** vuln, safe
@@ -299,7 +290,7 @@ nmap -p 8000 --script graphql-cost-analysis-bypass target.example.com
 
 ---
 
-### 10. **graphql-debug-trace-exposure** - Debug Mode and Trace Headers
+### 9. **graphql-debug-trace-exposure** - Debug Mode and Trace Headers
 **Description:** Triggers error responses and inspects them plus their headers for a non-null `debug` field, stack-trace content, and trace/banner headers (X-Debug, X-GraphQL-Trace, X-Powered-By, Server). Debug mode in production is a reconnaissance gift: framework, version, deployment layout and code paths all appear.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** vuln, discovery, safe
@@ -325,6 +316,36 @@ nmap -p 8000 --script graphql-debug-trace-exposure target.example.com
 |     [CRITICAL] Error responses carry stack traces and internal paths in the debug field
 |     [HIGH] File paths exposed in debug output
 |     [HIGH] Database hints exposed in debug output
+```
+
+---
+
+### 10. **graphql-error-info-disclosure** - Error/Debug Information Leaks
+**Description:** Triggers a battery of error classes (syntax, unknown field, invalid enum, resolver failure, variable errors, introspection-refused) and scans every error object - message, `debug` field, path - plus raw body for stack traces, file paths, database hints, environment hints, PIDs, addresses, span ids and framework fingerprints.
+
+**Risk Level:** 🟡 MEDIUM | **Category:** vuln, discovery, safe
+
+**What it checks:**
+- Six error-probe classes merged into one disclosure report
+- Signature scanning: stack traces, `/var/...` paths, DB drivers (psycopg2/sqlalchemy/...), env vars, PIDs, spans
+- Framework fingerprinting from error text and headers
+- Sanitized-error baseline classified as NOT VULNERABLE
+
+**How to Execute:**
+```bash
+nmap -p 8000 --script graphql-error-info-disclosure target.example.com
+```
+
+**Sample Output:**
+```
+| graphql-error-info-disclosure:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - GraphQL errors leak implementation detail
+|   Severity counts: CRITICAL=2 HIGH=3 MEDIUM=2 LOW=1 INFO=1
+|   Findings:
+|     [CRITICAL] File system paths are disclosed in GraphQL errors
+|     [CRITICAL] Stack traces are included in GraphQL error responses
+|     [HIGH] Database driver/connection hints are disclosed (psycopg2, sqlalchemy)
 ```
 
 ---
@@ -506,8 +527,6 @@ nmap -p 8000 --script graphql-endpoint-discovery --script-args 'graphql-endpoint
 |     WebSocket upgrade @/graphql: accepted (HTTP 101), subprotocol=graphql-transport-ws, Sec-WebSocket-Accept validated
 |     SSE subscription @/graphql: offered (HTTP 200 text/event-stream)
 ```
-
----
 
 ## 🔒 Safe & Non-Destructive
 

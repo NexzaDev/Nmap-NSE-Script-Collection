@@ -1,124 +1,59 @@
 # 🔌 WebSocket Security Audits
 
-**16 Nmap NSE scripts** for auditing the WebSocket (RFC 6455) attack surface reachable from an HTTP endpoint: a wire layer implementing the full handshake (Sec-WebSocket-Accept derivation, subprotocol and extension negotiation, version ladder) plus frame encode/decode with client masking, all three length forms, control frames and close-code tables; and a transport layer with budgeted sockets, frame round-trips, poll-endpoint HTTP probes and TLS liveness checks. The suite covers the class-defining WebSocket findings: cross-site hijacking (CSWSH) via a three-origin handshake matrix, anonymous upgrades with forged credentials, cross-user broadcast leakage in chat-style fan-out, binary-frame deserialization fingerprints (Java/pickle/MessagePack/BSON/protobuf), client-masking enforcement with degenerate-key probes, frame-size ladders against length-form abuse, permessage-deflate negotiation memory posture, ping/pong DoS discipline, auth-ticket channel hygiene, cleartext ws:// exposure, and framework handshakes of socket.io/engine.io, Rails Action Cable, Spring STOMP and GraphQL-over-WS. Every payload is inert and masked in output; every probe is a bounded read-only exchange.
+**16 Nmap NSE scripts** for auditing the WebSocket (RFC 6455) attack surface reachable from an HTTP endpoint:
+
+**Covers:**
+
+- A wire layer implementing the full handshake (Sec-WebSocket-Accept derivation, subprotocol and extension negotiation, version ladder) plus frame encode/decode with client masking
+- All three length forms
+- Control frames and close-code tables; and a transport layer with budgeted sockets
+- Frame round-trips
+- Poll-endpoint HTTP probes and TLS liveness checks
+
+**The suite covers the class-defining WebSocket findings:**
+
+- Cross-site hijacking (CSWSH) via a three-origin handshake matrix
+- Anonymous upgrades with forged credentials
+- Cross-user broadcast leakage in chat-style fan-out
+- Binary-frame deserialization fingerprints (Java/pickle/MessagePack/BSON/protobuf)
+- Client-masking enforcement with degenerate-key probes
+- Frame-size ladders against length-form abuse
+- Permessage-deflate negotiation memory posture
+- Ping/pong DoS discipline
+- Auth-ticket channel hygiene
+- Cleartext ws:// exposure
+- Framework handshakes of socket.io/engine.io
+- Rails Action Cable
+- Spring STOMP and GraphQL-over-WS. Every payload is inert and masked in output; every probe is a bounded read-only exchange.
 
 **Port:** target HTTP service (any port with `shortport.http`) | **Handshake:** RFC 6455 (version 13) with hybi-era fallbacks | **Protocols:** ws:// and wss:// upgrades, engine.io polling, STOMP, GraphQL-WS | **Total lines of Lua:** 21,544
 
-
 ---
-
 
 ## 📋 Script Index
 
-
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [ws-actioncable-rails-probe](#1-ws-actioncable-rails-probe-rails-action-cable-fingerprint) | 🟢 LOW | discovery, safe | 1250 |
-| 2 | [ws-auth-ticket-probe](#2-ws-auth-ticket-probe-websocket-auth-ticket-channels) | 🟡 MEDIUM | discovery, safe | 1257 |
-| 3 | [ws-binary-frame-deserialization](#3-ws-binary-frame-deserialization-binary-frame-deserialization-exposure) | 🟠 HIGH | vuln, safe | 1546 |
-| 4 | [ws-chat-broadcast-leak](#4-ws-chat-broadcast-leak-chat-broadcast-leakage-cross-user-fan-out) | 🔴 CRITICAL | vuln, safe | 1529 |
-| 5 | [ws-cleartext-transport-warning](#5-ws-cleartext-transport-warning-cleartext-ws-transport-warning) | 🟡 MEDIUM | defensive, safe | 1227 |
-| 6 | [ws-cross-site-hijacking-cswsh](#6-ws-cross-site-hijacking-cswsh-cross-site-websocket-hijacking-cswsh) | 🔴 CRITICAL | vuln, safe | 1529 |
-| 7 | [ws-graphql-transport-ws](#7-ws-graphql-transport-ws-graphql-over-websocket-transports) | 🟡 MEDIUM | discovery, safe | 1271 |
-| 8 | [ws-masked-frame-enforcement](#8-ws-masked-frame-enforcement-rfc-6455-client-masking-enforcement) | 🟠 HIGH | defensive, safe | 1547 |
-| 9 | [ws-max-frame-size-dos](#9-ws-max-frame-size-dos-maximum-frame-size-length-form-abuse) | 🟡 MEDIUM | defensive, safe | 1266 |
-| 10 | [ws-permessage-deflate-audit](#10-ws-permessage-deflate-audit-permessage-deflate-rfc-7692-audit) | 🟡 MEDIUM | defensive, safe | 1257 |
-| 11 | [ws-ping-pong-dos-tolerance](#11-ws-ping-pong-dos-tolerance-pingpong-dos-tolerance) | 🟡 MEDIUM | defensive, safe | 1297 |
-| 12 | [ws-socketio-handshake-probe](#12-ws-socketio-handshake-probe-socket.io-engine.io-handshake-probe) | 🟢 LOW | discovery, safe | 1253 |
-| 13 | [ws-spring-stomp-probe](#13-ws-spring-stomp-probe-spring-stomp-over-websocket) | 🟡 MEDIUM | discovery, safe | 1268 |
-| 14 | [ws-subprotocol-enumeration](#14-ws-subprotocol-enumeration-sec-websocket-protocol-enumeration) | 🟢 LOW | discovery, safe | 1258 |
-| 15 | [ws-unauth-connection-check](#15-ws-unauth-connection-check-unauthenticated-upgrade-check) | 🔴 CRITICAL | vuln, safe | 1529 |
-| 16 | [ws-version-handshake-negotiation](#16-ws-version-handshake-negotiation-sec-websocket-version-negotiation) | 🟢 LOW | discovery, safe | 1260 |
+| 1 | [ws-chat-broadcast-leak](#1-ws-chat-broadcast-leak---chat-broadcast-leakage-cross-user-fan-out) | 🔴 CRITICAL | vuln, safe | 1529 |
+| 2 | [ws-cross-site-hijacking-cswsh](#2-ws-cross-site-hijacking-cswsh---cross-site-websocket-hijacking-cswsh) | 🔴 CRITICAL | vuln, safe | 1529 |
+| 3 | [ws-unauth-connection-check](#3-ws-unauth-connection-check---unauthenticated-upgrade-check) | 🔴 CRITICAL | vuln, safe | 1529 |
+| 4 | [ws-binary-frame-deserialization](#4-ws-binary-frame-deserialization---binary-frame-deserialization-exposure) | 🟠 HIGH | vuln, safe | 1546 |
+| 5 | [ws-masked-frame-enforcement](#5-ws-masked-frame-enforcement---rfc-6455-client-masking-enforcement) | 🟠 HIGH | defensive, safe | 1547 |
+| 6 | [ws-auth-ticket-probe](#6-ws-auth-ticket-probe---websocket-auth-ticket-channels) | 🟡 MEDIUM | discovery, safe | 1257 |
+| 7 | [ws-cleartext-transport-warning](#7-ws-cleartext-transport-warning---cleartext-ws-transport-warning) | 🟡 MEDIUM | defensive, safe | 1227 |
+| 8 | [ws-graphql-transport-ws](#8-ws-graphql-transport-ws---graphql-over-websocket-transports) | 🟡 MEDIUM | discovery, safe | 1271 |
+| 9 | [ws-max-frame-size-dos](#9-ws-max-frame-size-dos---maximum-frame-size--length-form-abuse) | 🟡 MEDIUM | defensive, safe | 1266 |
+| 10 | [ws-permessage-deflate-audit](#10-ws-permessage-deflate-audit---permessage-deflate-rfc-7692-audit) | 🟡 MEDIUM | defensive, safe | 1257 |
+| 11 | [ws-ping-pong-dos-tolerance](#11-ws-ping-pong-dos-tolerance---pingpong-dos-tolerance) | 🟡 MEDIUM | defensive, safe | 1297 |
+| 12 | [ws-spring-stomp-probe](#12-ws-spring-stomp-probe---spring-stomp-over-websocket) | 🟡 MEDIUM | discovery, safe | 1268 |
+| 13 | [ws-actioncable-rails-probe](#13-ws-actioncable-rails-probe---rails-action-cable-fingerprint) | 🟢 LOW | discovery, safe | 1250 |
+| 14 | [ws-socketio-handshake-probe](#14-ws-socketio-handshake-probe---socketio--engineio-handshake-probe) | 🟢 LOW | discovery, safe | 1253 |
+| 15 | [ws-subprotocol-enumeration](#15-ws-subprotocol-enumeration---sec-websocket-protocol-enumeration) | 🟢 LOW | discovery, safe | 1258 |
+| 16 | [ws-version-handshake-negotiation](#16-ws-version-handshake-negotiation---sec-websocket-version-negotiation) | 🟢 LOW | discovery, safe | 1260 |
 
 ---
 
-
-### 1. **ws-actioncable-rails-probe** - Rails Action Cable Fingerprint
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- GETs the cable path and checks for the welcome envelope.
-- Upgrades with a trusted Origin and records the handshake.
-- Sends one inert frame and one Action Cable subscribe command.
-- Correlates markers (welcome, ping, confirm/reject) with the Rails deployment matrix.
-- Why it matters: Action Cable mounts are the WebSocket entry point of every Rails app; identifying them scopes the rest of the audit. confirm vs reject subscription behavior reveals whether channel authorization callbacks are wired at all.
-- Safety: two GETs, one upgrade, two inert frames; no channel writes and no broadcast reads are kept beyond masked markers.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script ws-actioncable-rails-probe target.corp.example.com
-
-# Tuned request budget and socket path
-nmap -p 80,8080,443 --script ws-actioncable-rails-probe --script-args 'ws-actioncable-rails-probe.timeout=8,ws-actioncable-rails-probe.maxrequests=48,ws-actioncable-rails-probe.cablepath=/cable,ws-actioncable-rails-probe.trusted_origin=app.target.local,ws-actioncable-rails-probe.channel=NotificationsChannel' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| ws-actioncable-rails-probe:
-|   Risk Level: 🟢 LOW
-|   Status: DISCOVERY - Rails Action Cable endpoint identified at /cable
-```
-
----
-
-### 2. **ws-auth-ticket-probe** - WebSocket Auth-Ticket Channels
-**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
-
-**What it checks:**
-- Baseline anonymous upgrade to see the natural gate.
-- Upgrade with a random ticket as a query parameter.
-- Upgrade with the ticket smuggled as a subprotocol token.
-- Upgrade with the ticket as a bearer token.
-- Grades channel hygiene and ticket validation.
-- Why it matters: One-time ticket schemes silently degrade into static secrets that sit in access logs when they ride the URL. Accepting structurally-valid but unvalidated tickets proves the auth gate is decorative.
-- Safety: random single-use probes only; no real tickets are guessed and nothing is replayed.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script ws-auth-ticket-probe target.corp.example.com
-
-# Tuned request budget and socket path
-nmap -p 80,8080,443 --script ws-auth-ticket-probe --script-args 'ws-auth-ticket-probe.timeout=8,ws-auth-ticket-probe.maxrequests=48,ws-auth-ticket-probe.wspath=/ws,ws-auth-ticket-probe.junk_cookie=sid=forged0123456789abcdef' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| ws-auth-ticket-probe:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - random ticket material accepted on the upgrade
-```
-
----
-
-### 3. **ws-binary-frame-deserialization** - Binary Frame Deserialization Exposure
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- Opens a socket on the configured path.
-- Sends nine one-shot signature probes, each followed to the server close/answer.
-- Classifies each reaction (protocol close vs application answer vs reflection).
-- Checks the transport posture and grades deserialization exposure.
-- Why it matters: Binary WebSocket frames bypass every HTTP-body inspection layer; a deserialization endpoint on a socket is a direct gadget-chain target and typically ends in remote code execution. The probe is purely observational: real gadgets are never constructed, only format fingerprints.
-- Safety: tiny inert payloads, one probe per format, bounded exchanges; no polymorphic payloads, no memory stress.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script ws-binary-frame-deserialization target.corp.example.com
-
-# Tuned request budget and socket path
-nmap -p 80,8080,443 --script ws-binary-frame-deserialization --script-args 'ws-binary-frame-deserialization.timeout=8,ws-binary-frame-deserialization.maxrequests=48,ws-binary-frame-deserialization.wspath=/ws' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| ws-binary-frame-deserialization:
-|   Risk Level: 🟠 HIGH
-|   Status: VULNERABLE - binary frames with serializer magic bytes reach application code
-```
-
----
-
-### 4. **ws-chat-broadcast-leak** - Chat Broadcast Leakage (Cross-User Fan-Out)
+### 1. **ws-chat-broadcast-leak** - Chat Broadcast Leakage (Cross-User Fan-Out)
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -147,35 +82,7 @@ nmap -p 80,8080,443 --script ws-chat-broadcast-leak --script-args 'ws-chat-broad
 
 ---
 
-### 5. **ws-cleartext-transport-warning** - Cleartext ws:// Transport Warning
-**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
-
-**What it checks:**
-- Attempts the plain upgrade and records the result.
-- Sends a TLS ClientHello to test for a TLS listener on the port.
-- If upgraded, performs one inert frame round-trip to demonstrate plaintext frames.
-- Grades no-TLS / mixed / enforced posture.
-- Why it matters: ws:// exposes the upgrade request - including ambient cookies and tokens - to every network hop, and frames have no integrity protection whatsoever. Many deployments terminate TLS for HTTP but forget the socket path.
-- Safety: one handshake, one ClientHello, one inert frame; no traffic interception beyond the script's own exchange.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script ws-cleartext-transport-warning target.corp.example.com
-
-# Tuned request budget and socket path
-nmap -p 80,8080,443 --script ws-cleartext-transport-warning --script-args 'ws-cleartext-transport-warning.timeout=8,ws-cleartext-transport-warning.maxrequests=48,ws-cleartext-transport-warning.wspath=/ws' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| ws-cleartext-transport-warning:
-|   Risk Level: 🟡 MEDIUM
-|   Status: NOTE - socket upgrades over cleartext while TLS is available on the port
-```
-
----
-
-### 6. **ws-cross-site-hijacking-cswsh** - Cross-Site WebSocket Hijacking (CSWSH)
+### 2. **ws-cross-site-hijacking-cswsh** - Cross-Site WebSocket Hijacking (CSWSH)
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -204,36 +111,64 @@ nmap -p 80,8080,443 --script ws-cross-site-hijacking-cswsh --script-args 'ws-cro
 
 ---
 
-### 7. **ws-graphql-transport-ws** - GraphQL over WebSocket Transports
-**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+### 3. **ws-unauth-connection-check** - Unauthenticated Upgrade Check
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
-- Upgrades with each subprotocol and records the echoed choice.
-- Sends connection_init with a random token payload.
-- Classifies ack/error answers per transport.
-- Probes the path over plain GET for upgrade-only enforcement.
-- Grades transport identity and anonymous-init posture.
-- Why it matters: The two transports share a handshake but differ in close-code contracts and security posture; the legacy stack is end-of-life with published DoS advisories. connection_ack for a fabricated token proves anonymous subscriptions even when the HTTP GraphQL endpoint is locked down.
-- Safety: two handshakes and one init message each; no subscriptions are created and no queries are executed.
+- Upgrades with no credentials and records the status/challenge.
+- Upgrades with a structurally valid but forged session cookie.
+- Upgrades with a syntactically valid random bearer token.
+- Upgrades with both forgeries together.
+- Builds an authentication-gate matrix and grades exposure.
+- Why it matters: The 101 handshake is the only gate many deployments ship; once it is open, every subscription, broadcast and command rides it. forged-but-well-formed credentials that still upgrade usually mean validation is missing entirely, not merely weak.
+- Safety: four bounded handshake attempts, random garbage credentials only; nothing is replayed, cracked or flooded.
 
 **How to Execute:**
 ```bash
-nmap -p 80,8080,443 --script ws-graphql-transport-ws target.corp.example.com
+nmap -p 80,8080,443 --script ws-unauth-connection-check target.corp.example.com
 
 # Tuned request budget and socket path
-nmap -p 80,8080,443 --script ws-graphql-transport-ws --script-args 'ws-graphql-transport-ws.timeout=8,ws-graphql-transport-ws.maxrequests=48,ws-graphql-transport-ws.gqlpath=/graphql' target.corp.example.com
+nmap -p 80,8080,443 --script ws-unauth-connection-check --script-args 'ws-unauth-connection-check.timeout=8,ws-unauth-connection-check.maxrequests=48,ws-unauth-connection-check.wspath=/ws,ws-unauth-connection-check.junk_cookie=sid=forged0123456789abcdef' target.corp.example.com
 ```
 
 **Sample Output:**
 ```
-| ws-graphql-transport-ws:
-|   Risk Level: 🟡 MEDIUM
-|   Status: INFO - GraphQL socket upgraded but connection_init was not acknowledged
+| ws-unauth-connection-check:
+|   Risk Level: 🔴 CRITICAL
+|   Status: VULNERABLE - WebSocket upgrades with zero credentials
 ```
 
 ---
 
-### 8. **ws-masked-frame-enforcement** - RFC 6455 Client-Masking Enforcement
+### 4. **ws-binary-frame-deserialization** - Binary Frame Deserialization Exposure
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- Opens a socket on the configured path.
+- Sends nine one-shot signature probes, each followed to the server close/answer.
+- Classifies each reaction (protocol close vs application answer vs reflection).
+- Checks the transport posture and grades deserialization exposure.
+- Why it matters: Binary WebSocket frames bypass every HTTP-body inspection layer; a deserialization endpoint on a socket is a direct gadget-chain target and typically ends in remote code execution. The probe is purely observational: real gadgets are never constructed, only format fingerprints.
+- Safety: tiny inert payloads, one probe per format, bounded exchanges; no polymorphic payloads, no memory stress.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script ws-binary-frame-deserialization target.corp.example.com
+
+# Tuned request budget and socket path
+nmap -p 80,8080,443 --script ws-binary-frame-deserialization --script-args 'ws-binary-frame-deserialization.timeout=8,ws-binary-frame-deserialization.maxrequests=48,ws-binary-frame-deserialization.wspath=/ws' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| ws-binary-frame-deserialization:
+|   Risk Level: 🟠 HIGH
+|   Status: VULNERABLE - binary frames with serializer magic bytes reach application code
+```
+
+---
+
+### 5. **ws-masked-frame-enforcement** - RFC 6455 Client-Masking Enforcement
 **Risk Level:** 🟠 HIGH | **Category:** defensive, safe
 
 **What it checks:**
@@ -258,6 +193,92 @@ nmap -p 80,8080,443 --script ws-masked-frame-enforcement --script-args 'ws-maske
 | ws-masked-frame-enforcement:
 |   Risk Level: 🟠 HIGH
 |   Status: VULNERABLE - server processes unmasked client frames (RFC 6455 5.1 violation)
+```
+
+---
+
+### 6. **ws-auth-ticket-probe** - WebSocket Auth-Ticket Channels
+**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+
+**What it checks:**
+- Baseline anonymous upgrade to see the natural gate.
+- Upgrade with a random ticket as a query parameter.
+- Upgrade with the ticket smuggled as a subprotocol token.
+- Upgrade with the ticket as a bearer token.
+- Grades channel hygiene and ticket validation.
+- Why it matters: One-time ticket schemes silently degrade into static secrets that sit in access logs when they ride the URL. Accepting structurally-valid but unvalidated tickets proves the auth gate is decorative.
+- Safety: random single-use probes only; no real tickets are guessed and nothing is replayed.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script ws-auth-ticket-probe target.corp.example.com
+
+# Tuned request budget and socket path
+nmap -p 80,8080,443 --script ws-auth-ticket-probe --script-args 'ws-auth-ticket-probe.timeout=8,ws-auth-ticket-probe.maxrequests=48,ws-auth-ticket-probe.wspath=/ws,ws-auth-ticket-probe.junk_cookie=sid=forged0123456789abcdef' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| ws-auth-ticket-probe:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - random ticket material accepted on the upgrade
+```
+
+---
+
+### 7. **ws-cleartext-transport-warning** - Cleartext ws:// Transport Warning
+**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
+
+**What it checks:**
+- Attempts the plain upgrade and records the result.
+- Sends a TLS ClientHello to test for a TLS listener on the port.
+- If upgraded, performs one inert frame round-trip to demonstrate plaintext frames.
+- Grades no-TLS / mixed / enforced posture.
+- Why it matters: ws:// exposes the upgrade request - including ambient cookies and tokens - to every network hop, and frames have no integrity protection whatsoever. Many deployments terminate TLS for HTTP but forget the socket path.
+- Safety: one handshake, one ClientHello, one inert frame; no traffic interception beyond the script's own exchange.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script ws-cleartext-transport-warning target.corp.example.com
+
+# Tuned request budget and socket path
+nmap -p 80,8080,443 --script ws-cleartext-transport-warning --script-args 'ws-cleartext-transport-warning.timeout=8,ws-cleartext-transport-warning.maxrequests=48,ws-cleartext-transport-warning.wspath=/ws' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| ws-cleartext-transport-warning:
+|   Risk Level: 🟡 MEDIUM
+|   Status: NOTE - socket upgrades over cleartext while TLS is available on the port
+```
+
+---
+
+### 8. **ws-graphql-transport-ws** - GraphQL over WebSocket Transports
+**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+
+**What it checks:**
+- Upgrades with each subprotocol and records the echoed choice.
+- Sends connection_init with a random token payload.
+- Classifies ack/error answers per transport.
+- Probes the path over plain GET for upgrade-only enforcement.
+- Grades transport identity and anonymous-init posture.
+- Why it matters: The two transports share a handshake but differ in close-code contracts and security posture; the legacy stack is end-of-life with published DoS advisories. connection_ack for a fabricated token proves anonymous subscriptions even when the HTTP GraphQL endpoint is locked down.
+- Safety: two handshakes and one init message each; no subscriptions are created and no queries are executed.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script ws-graphql-transport-ws target.corp.example.com
+
+# Tuned request budget and socket path
+nmap -p 80,8080,443 --script ws-graphql-transport-ws --script-args 'ws-graphql-transport-ws.timeout=8,ws-graphql-transport-ws.maxrequests=48,ws-graphql-transport-ws.gqlpath=/graphql' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| ws-graphql-transport-ws:
+|   Risk Level: 🟡 MEDIUM
+|   Status: INFO - GraphQL socket upgraded but connection_init was not acknowledged
 ```
 
 ---
@@ -348,7 +369,63 @@ nmap -p 80,8080,443 --script ws-ping-pong-dos-tolerance --script-args 'ws-ping-p
 
 ---
 
-### 12. **ws-socketio-handshake-probe** - socket.io / engine.io Handshake Probe
+### 12. **ws-spring-stomp-probe** - Spring STOMP over WebSocket
+**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+
+**What it checks:**
+- Walks the three STOMP subprotocols until one upgrades.
+- Sends CONNECT with accept-version 1.2 and a vhost.
+- Parses CONNECTED (version, heart-beat, session) or ERROR.
+- Grades discovery results and anonymous-access posture.
+- Why it matters: STOMP brokers frequently accept anonymous CONNECTs, exposing topic trees, user destinations and message injection to any web page. The CONNECTED frame fingerprints broker topology (simple broker vs RabbitMQ relay) that direct HTTP scans never see.
+- Safety: one CONNECT per subprotocol; no SUBSCRIBE, no message injection, no broker writes.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script ws-spring-stomp-probe target.corp.example.com
+
+# Tuned request budget and socket path
+nmap -p 80,8080,443 --script ws-spring-stomp-probe --script-args 'ws-spring-stomp-probe.timeout=8,ws-spring-stomp-probe.maxrequests=48,ws-spring-stomp-probe.wspath=/ws' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| ws-spring-stomp-probe:
+|   Risk Level: 🟡 MEDIUM
+|   Status: INFO - WebSocket upgrade works but no STOMP broker answered
+```
+
+---
+
+### 13. **ws-actioncable-rails-probe** - Rails Action Cable Fingerprint
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- GETs the cable path and checks for the welcome envelope.
+- Upgrades with a trusted Origin and records the handshake.
+- Sends one inert frame and one Action Cable subscribe command.
+- Correlates markers (welcome, ping, confirm/reject) with the Rails deployment matrix.
+- Why it matters: Action Cable mounts are the WebSocket entry point of every Rails app; identifying them scopes the rest of the audit. confirm vs reject subscription behavior reveals whether channel authorization callbacks are wired at all.
+- Safety: two GETs, one upgrade, two inert frames; no channel writes and no broadcast reads are kept beyond masked markers.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script ws-actioncable-rails-probe target.corp.example.com
+
+# Tuned request budget and socket path
+nmap -p 80,8080,443 --script ws-actioncable-rails-probe --script-args 'ws-actioncable-rails-probe.timeout=8,ws-actioncable-rails-probe.maxrequests=48,ws-actioncable-rails-probe.cablepath=/cable,ws-actioncable-rails-probe.trusted_origin=app.target.local,ws-actioncable-rails-probe.channel=NotificationsChannel' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| ws-actioncable-rails-probe:
+|   Risk Level: 🟢 LOW
+|   Status: DISCOVERY - Rails Action Cable endpoint identified at /cable
+```
+
+---
+
+### 14. **ws-socketio-handshake-probe** - socket.io / engine.io Handshake Probe
 **Risk Level:** 🟢 LOW | **Category:** discovery, safe
 
 **What it checks:**
@@ -377,35 +454,7 @@ nmap -p 80,8080,443 --script ws-socketio-handshake-probe --script-args 'ws-socke
 
 ---
 
-### 13. **ws-spring-stomp-probe** - Spring STOMP over WebSocket
-**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
-
-**What it checks:**
-- Walks the three STOMP subprotocols until one upgrades.
-- Sends CONNECT with accept-version 1.2 and a vhost.
-- Parses CONNECTED (version, heart-beat, session) or ERROR.
-- Grades discovery results and anonymous-access posture.
-- Why it matters: STOMP brokers frequently accept anonymous CONNECTs, exposing topic trees, user destinations and message injection to any web page. The CONNECTED frame fingerprints broker topology (simple broker vs RabbitMQ relay) that direct HTTP scans never see.
-- Safety: one CONNECT per subprotocol; no SUBSCRIBE, no message injection, no broker writes.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script ws-spring-stomp-probe target.corp.example.com
-
-# Tuned request budget and socket path
-nmap -p 80,8080,443 --script ws-spring-stomp-probe --script-args 'ws-spring-stomp-probe.timeout=8,ws-spring-stomp-probe.maxrequests=48,ws-spring-stomp-probe.wspath=/ws' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| ws-spring-stomp-probe:
-|   Risk Level: 🟡 MEDIUM
-|   Status: INFO - WebSocket upgrade works but no STOMP broker answered
-```
-
----
-
-### 14. **ws-subprotocol-enumeration** - Sec-WebSocket-Protocol Enumeration
+### 15. **ws-subprotocol-enumeration** - Sec-WebSocket-Protocol Enumeration
 **Risk Level:** 🟢 LOW | **Category:** discovery, safe
 
 **What it checks:**
@@ -429,35 +478,6 @@ nmap -p 80,8080,443 --script ws-subprotocol-enumeration --script-args 'ws-subpro
 | ws-subprotocol-enumeration:
 |   Risk Level: 🟢 LOW
 |   Status: DISCOVERY - server supports WebSocket subprotocols: chat
-```
-
----
-
-### 15. **ws-unauth-connection-check** - Unauthenticated Upgrade Check
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
-
-**What it checks:**
-- Upgrades with no credentials and records the status/challenge.
-- Upgrades with a structurally valid but forged session cookie.
-- Upgrades with a syntactically valid random bearer token.
-- Upgrades with both forgeries together.
-- Builds an authentication-gate matrix and grades exposure.
-- Why it matters: The 101 handshake is the only gate many deployments ship; once it is open, every subscription, broadcast and command rides it. forged-but-well-formed credentials that still upgrade usually mean validation is missing entirely, not merely weak.
-- Safety: four bounded handshake attempts, random garbage credentials only; nothing is replayed, cracked or flooded.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script ws-unauth-connection-check target.corp.example.com
-
-# Tuned request budget and socket path
-nmap -p 80,8080,443 --script ws-unauth-connection-check --script-args 'ws-unauth-connection-check.timeout=8,ws-unauth-connection-check.maxrequests=48,ws-unauth-connection-check.wspath=/ws,ws-unauth-connection-check.junk_cookie=sid=forged0123456789abcdef' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| ws-unauth-connection-check:
-|   Risk Level: 🔴 CRITICAL
-|   Status: VULNERABLE - WebSocket upgrades with zero credentials
 ```
 
 ---
@@ -488,4 +508,3 @@ nmap -p 80,8080,443 --script ws-version-handshake-negotiation --script-args 'ws-
 |   Status: DISCOVERY - RFC 6455 (version 13) WebSocket handshake confirmed
 ```
 
----

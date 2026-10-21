@@ -1,155 +1,54 @@
 # 📞 SIP/VoIP Security Audits
 
-**16 Nmap NSE scripts** for auditing SIP/VoIP services directly on the wire: a full RFC 3261 message layer (request/response parsing with ordered + indexed headers, Via/Contact/URI/digest-challenge/Allow/Supported/SDP decoders), a self-contained MD5 with RFC 2617 digest authentication (MD5 and MD5-sess, qop=auth), staged REGISTER probes that classify registrar answers (accepted/digest-challenge/not-found/forbidden), INVITE dialogs with SDP offers and ACK/BYE cleanup, SUBSCRIBE presence and MESSAGE relay tests, blind-BYE dialog validation, PBX engine fingerprints (Asterisk, FreePBX, Cisco CUCM, 3CX, Kamailio, OpenSIPS), SDP codec inventory with SRTP grading, RFC1918 address-disclosure scanning, a bounded OPTIONS burst rate probe (max 12) and an RFC 5630 SIPS/TLS 5061 certificate audit (subject/SAN/expiry grading). Every probe is bounded and self-cancelling: max 8 registration attempts, max 12 burst datagrams, dialogs torn down immediately.
+**16 Nmap NSE scripts** for auditing SIP/VoIP services directly on the wire:
+
+**Covers:**
+
+- A full RFC 3261 message layer (request/response parsing with ordered + indexed headers, Via/Contact/URI/digest-challenge/Allow/Supported/SDP decoders)
+- A self-contained MD5 with RFC 2617 digest authentication (MD5 and MD5-sess, qop=auth)
+- Staged REGISTER probes that classify registrar answers (accepted/digest-challenge/not-found/forbidden)
+- INVITE dialogs with SDP offers and ACK/BYE cleanup
+- SUBSCRIBE presence and MESSAGE relay tests
+- Blind-BYE dialog validation
+- PBX engine fingerprints (Asterisk, FreePBX, Cisco CUCM, 3CX, Kamailio, OpenSIPS)
+- SDP codec inventory with SRTP grading
+- RFC1918 address-disclosure scanning
+- A bounded OPTIONS burst rate probe (max 12) and an RFC 5630 SIPS/TLS 5061 certificate audit (subject/SAN/expiry grading)
+
+**Every probe is bounded and self-cancelling:**
+
+- Max 8 registration attempts
+- Max 12 burst datagrams
+- Dialogs torn down immediately.
 
 **Ports:** 5060/udp+tcp (SIP) + 5061/tcp (SIPS/TLS) | **Protocol:** SIP RFC 3261, digest auth RFC 2617, SDP RFC 4566, SIPS RFC 5630 | **Total lines of Lua:** 52,400
 
-
 ---
-
 
 ## 📋 Script Index
 
-
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [sip-bye-teardown-spoof](#1-sip-bye-teardown-spoof-blind-bye-teardown-dialog-validation) | 🟠 HIGH | vuln, safe | 3267 |
-| 2 | [sip-call-eavesdropping-rtp](#2-sip-call-eavesdropping-rtp-plain-rtp-vs-srtp-media-audit) | 🟠 HIGH | vuln, safe | 3280 |
-| 3 | [sip-callerid-spoof-check](#3-sip-callerid-spoof-check-caller-id-spoof-acceptance-test) | 🟠 HIGH | vuln, safe | 3288 |
-| 4 | [sip-cleartext-udp-warning](#4-sip-cleartext-udp-warning-cleartext-udptcp-signaling-warning) | 🟡 MEDIUM | defensive, safe | 3247 |
-| 5 | [sip-default-credentials](#5-sip-default-credentials-default-extension-credential-audit) | 🔴 CRITICAL | vuln, safe | 3299 |
-| 6 | [sip-extension-enumeration](#6-sip-extension-enumeration-extension-enumeration-oracle) | 🔴 CRITICAL | vuln, safe | 3295 |
-| 7 | [sip-message-spam-relay](#7-sip-message-spam-relay-unauthenticated-message-relay-test) | 🟠 HIGH | vuln, safe | 3265 |
-| 8 | [sip-method-flood-dos](#8-sip-method-flood-dos-request-rate-limit-probe) | 🟡 MEDIUM | defensive, safe | 3281 |
-| 9 | [sip-nat-traversal-leak](#9-sip-nat-traversal-leak-rfc1918-header-address-disclosure) | 🟡 MEDIUM | discovery, safe | 3262 |
-| 10 | [sip-presence-subscription](#10-sip-presence-subscription-unauthenticated-presence-subscription) | 🟡 MEDIUM | discovery, safe | 3267 |
-| 11 | [sip-sdp-codec-audit](#11-sip-sdp-codec-audit-sdp-codec-inventory-audit) | 🟢 LOW | discovery, safe | 3276 |
-| 12 | [sip-server-fingerprint](#12-sip-server-fingerprint-pbx-engine-fingerprint) | 🟢 LOW | discovery, safe | 3267 |
-| 13 | [sip-tls-cert-validation](#13-sip-tls-cert-validation-sips-tls-certificate-validation) | 🟡 MEDIUM | defensive, safe | 3306 |
-| 14 | [sip-unauth-options-enum](#14-sip-unauth-options-enum-anonymous-options-capability-enum) | 🟢 LOW | discovery, safe | 3268 |
-| 15 | [sip-unauthenticated-invite](#15-sip-unauthenticated-invite-open-call-relay-invite-test) | 🔴 CRITICAL | vuln, safe | 3265 |
-| 16 | [sip-unauthenticated-register](#16-sip-unauthenticated-register-unauthenticated-register-test) | 🔴 CRITICAL | vuln, safe | 3267 |
+| 1 | [sip-default-credentials](#1-sip-default-credentials---default-extension-credential-audit) | 🔴 CRITICAL | vuln, safe | 3299 |
+| 2 | [sip-extension-enumeration](#2-sip-extension-enumeration---extension-enumeration-oracle) | 🔴 CRITICAL | vuln, safe | 3295 |
+| 3 | [sip-unauthenticated-invite](#3-sip-unauthenticated-invite---open-call-relay-invite-test) | 🔴 CRITICAL | vuln, safe | 3265 |
+| 4 | [sip-unauthenticated-register](#4-sip-unauthenticated-register---unauthenticated-register-test) | 🔴 CRITICAL | vuln, safe | 3267 |
+| 5 | [sip-bye-teardown-spoof](#5-sip-bye-teardown-spoof---blind-bye-teardown--dialog-validation) | 🟠 HIGH | vuln, safe | 3267 |
+| 6 | [sip-call-eavesdropping-rtp](#6-sip-call-eavesdropping-rtp---plain-rtp-vs-srtp-media-audit) | 🟠 HIGH | vuln, safe | 3280 |
+| 7 | [sip-callerid-spoof-check](#7-sip-callerid-spoof-check---caller-id-spoof-acceptance-test) | 🟠 HIGH | vuln, safe | 3288 |
+| 8 | [sip-message-spam-relay](#8-sip-message-spam-relay---unauthenticated-message-relay-test) | 🟠 HIGH | vuln, safe | 3265 |
+| 9 | [sip-cleartext-udp-warning](#9-sip-cleartext-udp-warning---cleartext-udptcp-signaling-warning) | 🟡 MEDIUM | defensive, safe | 3247 |
+| 10 | [sip-method-flood-dos](#10-sip-method-flood-dos---request-rate-limit-probe) | 🟡 MEDIUM | defensive, safe | 3281 |
+| 11 | [sip-nat-traversal-leak](#11-sip-nat-traversal-leak---rfc1918-header-address-disclosure) | 🟡 MEDIUM | discovery, safe | 3262 |
+| 12 | [sip-presence-subscription](#12-sip-presence-subscription---unauthenticated-presence-subscription) | 🟡 MEDIUM | discovery, safe | 3267 |
+| 13 | [sip-tls-cert-validation](#13-sip-tls-cert-validation---sips-tls-certificate-validation) | 🟡 MEDIUM | defensive, safe | 3306 |
+| 14 | [sip-sdp-codec-audit](#14-sip-sdp-codec-audit---sdp-codec-inventory-audit) | 🟢 LOW | discovery, safe | 3276 |
+| 15 | [sip-server-fingerprint](#15-sip-server-fingerprint---pbx-engine-fingerprint) | 🟢 LOW | discovery, safe | 3267 |
+| 16 | [sip-unauth-options-enum](#16-sip-unauth-options-enum---anonymous-options-capability-enum) | 🟢 LOW | discovery, safe | 3268 |
 
 ---
 
-
-### 1. **sip-bye-teardown-spoof** - Blind BYE Teardown / Dialog Validation
-**Description:** Checks whether the server validates Call-ID and tags on BYE requests
-
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- Sends a single BYE for a fresh, never-established Call-ID.
-- Classifies: blind teardown accepted (200), validated (481/403/404), unclear.
-- No real dialog is ever touched.
-- Why it matters: A server that answers a forged BYE with 200 OK lets anyone drop active calls (financial desks, support lines) by guessing Call-IDs. A 481 "Call/Transaction Does Not Exist" answer proves dialog state is validated.
-- Safety: one forged BYE with a random Call-ID; no existing call is referenced.
-
-**How to Execute:**
-```bash
-nmap -p 5060 --script sip-bye-teardown-spoof -sU pbx01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script sip-bye-teardown-spoof -sU --script-args 'sip-bye-teardown-spoof.timeout=8,sip-bye-teardown-spoof.maxrequests=48,sip-bye-teardown-spoof.retries=1' pbx01.corp.example.com
-```
-
-**Sample Output:**
-```
-| sip-bye-teardown-spoof:
-|   Risk Level: 🟠 HIGH
-|   Status: SECURE - unknown dialog rejected (481)
-```
-
----
-
-### 2. **sip-call-eavesdropping-rtp** - Plain RTP vs SRTP Media Audit
-**Description:** Checks whether the SDP answer negotiates plain RTP instead of SRTP: a
-
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- Sends one INVITE with a plain audit SDP offer.
-- Parses the server's SDP answer for the media protocol and crypto attributes.
-- Classifies plain-RTP vs SRTP negotiation.
-- Why it matters: Plain RTP carries the full conversation with no encryption; on-path capture reproduces the entire call. SRTP (RTP/SAVP or a=crypto) closes that channel when both sides support it.
-- Safety: one SDP exchange with no media ever transmitted; the dialog is torn down immediately.
-
-**How to Execute:**
-```bash
-nmap -p 5060 --script sip-call-eavesdropping-rtp -sU pbx01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script sip-call-eavesdropping-rtp -sU --script-args 'sip-call-eavesdropping-rtp.timeout=8,sip-call-eavesdropping-rtp.maxrequests=48,sip-call-eavesdropping-rtp.retries=1' pbx01.corp.example.com
-```
-
-**Sample Output:**
-```
-| sip-call-eavesdropping-rtp:
-|   Risk Level: 🟠 HIGH
-|   Status: INFORMATIONAL - SDP answer gated behind authentication (407); media policy not observable
-```
-
----
-
-### 3. **sip-callerid-spoof-check** - Caller-ID Spoof Acceptance Test
-**Description:** Tests whether the server validates From and P-Asserted-Identity headers
-
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- Sends a single INVITE with a spoofed P-Asserted-Identity and a foreign From user.
-- Classifies: relayed blind (2xx), refused/forbidden (403), auth-gated (401/407).
-- Cleans the dialog up immediately when a call path opens.
-- Why it matters: Blind acceptance of caller-ID claims enables voice phishing that displays internal or trusted numbers (bank, IT helpdesk, executive). Servers that gate the call still close the spoofing surface.
-- Safety: one INVITE to the audit extension, torn down at once; no calls to external destinations.
-
-**How to Execute:**
-```bash
-nmap -p 5060 --script sip-callerid-spoof-check -sU pbx01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script sip-callerid-spoof-check -sU --script-args 'sip-callerid-spoof-check.timeout=8,sip-callerid-spoof-check.maxrequests=48,sip-callerid-spoof-check.retries=1' pbx01.corp.example.com
-```
-
-**Sample Output:**
-```
-| sip-callerid-spoof-check:
-|   Risk Level: 🟠 HIGH
-|   Status: INFORMATIONAL - call path auth-gated (407); identity policy could not be observed past the gate
-```
-
----
-
-### 4. **sip-cleartext-udp-warning** - Cleartext UDP/TCP Signaling Warning
-**Description:** Flags cleartext UDP/TCP SIP signaling on port 5060 as opposed to
-
-**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
-
-**What it checks:**
-- Probes the plain 5060 transport with one OPTIONS.
-- Records that signaling is cleartext and what it exposes.
-- Notes whether the platform advertises SIPS support.
-- Why it matters: Digest authentication protects the password, not the conversation: caller IDs, extensions, presence and SDP topology are all readable. SIPS (RFC 5630) moves signaling to TLS where the full metadata is protected.
-- Safety: a single read-only exchange.
-
-**How to Execute:**
-```bash
-nmap -p 5060 --script sip-cleartext-udp-warning -sU pbx01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script sip-cleartext-udp-warning -sU --script-args 'sip-cleartext-udp-warning.timeout=8,sip-cleartext-udp-warning.maxrequests=48,sip-cleartext-udp-warning.retries=1' pbx01.corp.example.com
-```
-
-**Sample Output:**
-```
-| sip-cleartext-udp-warning:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - SIP signaling runs in cleartext on 5060; metadata is readable on-path
-```
-
----
-
-### 5. **sip-default-credentials** - Default Extension Credential Audit
+### 1. **sip-default-credentials** - Default Extension Credential Audit
 **Description:** Tests the classic default extension credentials (100/100, admin/admin
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -178,7 +77,7 @@ nmap -p 23 --script sip-default-credentials -sU --script-args 'sip-default-crede
 
 ---
 
-### 6. **sip-extension-enumeration** - Extension Enumeration Oracle
+### 2. **sip-extension-enumeration** - Extension Enumeration Oracle
 **Description:** Enumerates internal PBX extensions by issuing one anonymous REGISTER
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -207,7 +106,152 @@ nmap -p 23 --script sip-extension-enumeration -sU --script-args 'sip-extension-e
 
 ---
 
-### 7. **sip-message-spam-relay** - Unauthenticated MESSAGE Relay Test
+### 3. **sip-unauthenticated-invite** - Open Call Relay (INVITE) Test
+**Description:** Sends one unauthenticated INVITE with a minimal SDP offer to test for
+
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
+
+**What it checks:**
+- Sends a single INVITE with an audit SDP offer (PCMU/PCMA/G.729).
+- Classifies the final answer: relayed (2xx), auth-gated (401/407), refused (403/404/486).
+- Tears the dialog down immediately with ACK/BYE on success.
+- Why it matters: A PBX that completes an anonymous INVITE lets anyone place calls at the owner's expense and reach internal dial plans. Auth-gated INVITE handling (401/407) is the expected control.
+- Safety: exactly one call attempt to the audit extension, cancelled right away; no DTMF, media or transfer is attempted.
+
+**How to Execute:**
+```bash
+nmap -p 5060 --script sip-unauthenticated-invite -sU pbx01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script sip-unauthenticated-invite -sU --script-args 'sip-unauthenticated-invite.timeout=8,sip-unauthenticated-invite.maxrequests=48,sip-unauthenticated-invite.retries=1' pbx01.corp.example.com
+```
+
+**Sample Output:**
+```
+| sip-unauthenticated-invite:
+|   Risk Level: 🔴 CRITICAL
+|   Status: SECURE - INVITE is auth-gated (407; realm corp.sip)
+```
+
+---
+
+### 4. **sip-unauthenticated-register** - Unauthenticated REGISTER Test
+**Description:** Tests whether the SIP registrar accepts extension registration without
+
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
+
+**What it checks:**
+- Sends one anonymous REGISTER for the audit extension.
+- Classifies: accepted (200), digest challenge (401/407), refused (403), unknown extension (404).
+- Never follows the challenge with credentials.
+- Why it matters: An unauthenticated registration is full PBX account compromise: callers can receive the target extension's calls and place outbound ones (toll fraud). Registrars demanding a challenge on first attempt expose no surface.
+- Safety: a single REGISTER without credentials; the session closes immediately after classification.
+
+**How to Execute:**
+```bash
+nmap -p 5060 --script sip-unauthenticated-register -sU pbx01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script sip-unauthenticated-register -sU --script-args 'sip-unauthenticated-register.timeout=8,sip-unauthenticated-register.maxrequests=48,sip-unauthenticated-register.retries=1' pbx01.corp.example.com
+```
+
+**Sample Output:**
+```
+| sip-unauthenticated-register:
+|   Risk Level: 🔴 CRITICAL
+|   Status: SECURE - registrar demands digest authentication before any registration (401)
+```
+
+---
+
+### 5. **sip-bye-teardown-spoof** - Blind BYE Teardown / Dialog Validation
+**Description:** Checks whether the server validates Call-ID and tags on BYE requests
+
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- Sends a single BYE for a fresh, never-established Call-ID.
+- Classifies: blind teardown accepted (200), validated (481/403/404), unclear.
+- No real dialog is ever touched.
+- Why it matters: A server that answers a forged BYE with 200 OK lets anyone drop active calls (financial desks, support lines) by guessing Call-IDs. A 481 "Call/Transaction Does Not Exist" answer proves dialog state is validated.
+- Safety: one forged BYE with a random Call-ID; no existing call is referenced.
+
+**How to Execute:**
+```bash
+nmap -p 5060 --script sip-bye-teardown-spoof -sU pbx01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script sip-bye-teardown-spoof -sU --script-args 'sip-bye-teardown-spoof.timeout=8,sip-bye-teardown-spoof.maxrequests=48,sip-bye-teardown-spoof.retries=1' pbx01.corp.example.com
+```
+
+**Sample Output:**
+```
+| sip-bye-teardown-spoof:
+|   Risk Level: 🟠 HIGH
+|   Status: SECURE - unknown dialog rejected (481)
+```
+
+---
+
+### 6. **sip-call-eavesdropping-rtp** - Plain RTP vs SRTP Media Audit
+**Description:** Checks whether the SDP answer negotiates plain RTP instead of SRTP: a
+
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- Sends one INVITE with a plain audit SDP offer.
+- Parses the server's SDP answer for the media protocol and crypto attributes.
+- Classifies plain-RTP vs SRTP negotiation.
+- Why it matters: Plain RTP carries the full conversation with no encryption; on-path capture reproduces the entire call. SRTP (RTP/SAVP or a=crypto) closes that channel when both sides support it.
+- Safety: one SDP exchange with no media ever transmitted; the dialog is torn down immediately.
+
+**How to Execute:**
+```bash
+nmap -p 5060 --script sip-call-eavesdropping-rtp -sU pbx01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script sip-call-eavesdropping-rtp -sU --script-args 'sip-call-eavesdropping-rtp.timeout=8,sip-call-eavesdropping-rtp.maxrequests=48,sip-call-eavesdropping-rtp.retries=1' pbx01.corp.example.com
+```
+
+**Sample Output:**
+```
+| sip-call-eavesdropping-rtp:
+|   Risk Level: 🟠 HIGH
+|   Status: INFORMATIONAL - SDP answer gated behind authentication (407); media policy not observable
+```
+
+---
+
+### 7. **sip-callerid-spoof-check** - Caller-ID Spoof Acceptance Test
+**Description:** Tests whether the server validates From and P-Asserted-Identity headers
+
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- Sends a single INVITE with a spoofed P-Asserted-Identity and a foreign From user.
+- Classifies: relayed blind (2xx), refused/forbidden (403), auth-gated (401/407).
+- Cleans the dialog up immediately when a call path opens.
+- Why it matters: Blind acceptance of caller-ID claims enables voice phishing that displays internal or trusted numbers (bank, IT helpdesk, executive). Servers that gate the call still close the spoofing surface.
+- Safety: one INVITE to the audit extension, torn down at once; no calls to external destinations.
+
+**How to Execute:**
+```bash
+nmap -p 5060 --script sip-callerid-spoof-check -sU pbx01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script sip-callerid-spoof-check -sU --script-args 'sip-callerid-spoof-check.timeout=8,sip-callerid-spoof-check.maxrequests=48,sip-callerid-spoof-check.retries=1' pbx01.corp.example.com
+```
+
+**Sample Output:**
+```
+| sip-callerid-spoof-check:
+|   Risk Level: 🟠 HIGH
+|   Status: INFORMATIONAL - call path auth-gated (407); identity policy could not be observed past the gate
+```
+
+---
+
+### 8. **sip-message-spam-relay** - Unauthenticated MESSAGE Relay Test
 **Description:** Tests for unauthenticated SIP MESSAGE relay: sends up to three short
 
 **Risk Level:** 🟠 HIGH | **Category:** vuln, safe
@@ -236,7 +280,36 @@ nmap -p 23 --script sip-message-spam-relay -sU --script-args 'sip-message-spam-r
 
 ---
 
-### 8. **sip-method-flood-dos** - Request Rate-Limit Probe
+### 9. **sip-cleartext-udp-warning** - Cleartext UDP/TCP Signaling Warning
+**Description:** Flags cleartext UDP/TCP SIP signaling on port 5060 as opposed to
+
+**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
+
+**What it checks:**
+- Probes the plain 5060 transport with one OPTIONS.
+- Records that signaling is cleartext and what it exposes.
+- Notes whether the platform advertises SIPS support.
+- Why it matters: Digest authentication protects the password, not the conversation: caller IDs, extensions, presence and SDP topology are all readable. SIPS (RFC 5630) moves signaling to TLS where the full metadata is protected.
+- Safety: a single read-only exchange.
+
+**How to Execute:**
+```bash
+nmap -p 5060 --script sip-cleartext-udp-warning -sU pbx01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script sip-cleartext-udp-warning -sU --script-args 'sip-cleartext-udp-warning.timeout=8,sip-cleartext-udp-warning.maxrequests=48,sip-cleartext-udp-warning.retries=1' pbx01.corp.example.com
+```
+
+**Sample Output:**
+```
+| sip-cleartext-udp-warning:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - SIP signaling runs in cleartext on 5060; metadata is readable on-path
+```
+
+---
+
+### 10. **sip-method-flood-dos** - Request Rate-Limit Probe
 **Description:** Measures SIP request rate limiting: a short burst of OPTIONS requests
 
 **Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
@@ -265,7 +338,7 @@ nmap -p 23 --script sip-method-flood-dos -sU --script-args 'sip-method-flood-dos
 
 ---
 
-### 9. **sip-nat-traversal-leak** - RFC1918 Header Address Disclosure
+### 11. **sip-nat-traversal-leak** - RFC1918 Header Address Disclosure
 **Description:** Inspects Via, Contact, Record-Route and related headers for internal
 
 **Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
@@ -294,7 +367,7 @@ nmap -p 23 --script sip-nat-traversal-leak -sU --script-args 'sip-nat-traversal-
 
 ---
 
-### 10. **sip-presence-subscription** - Unauthenticated Presence Subscription
+### 12. **sip-presence-subscription** - Unauthenticated Presence Subscription
 **Description:** Tests unauthenticated SIP SUBSCRIBE for user presence: one anonymous
 
 **Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
@@ -319,64 +392,6 @@ nmap -p 23 --script sip-presence-subscription -sU --script-args 'sip-presence-su
 | sip-presence-subscription:
 |   Risk Level: 🟡 MEDIUM
 |   Status: SECURE - presence subscription refused (401)
-```
-
----
-
-### 11. **sip-sdp-codec-audit** - SDP Codec Inventory Audit
-**Description:** Inspects the audio codecs the PBX offers in its SDP answer (G.711
-
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Sends one INVITE with a codec-probing SDP offer.
-- Extracts every m=audio payload with its rtpmap name.
-- Grades the inventory and the media transport security.
-- Why it matters: Codec inventory drives bandwidth planning and interop, and flags low-bitrate codecs (G.729, Speex, iLBC) whose transcoding and quality trade-offs need explicit approval. The media protocol row doubles as an SRTP posture check.
-- Safety: one SDP exchange, no media transmitted.
-
-**How to Execute:**
-```bash
-nmap -p 5060 --script sip-sdp-codec-audit -sU pbx01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script sip-sdp-codec-audit -sU --script-args 'sip-sdp-codec-audit.timeout=8,sip-sdp-codec-audit.maxrequests=48,sip-sdp-codec-audit.retries=1' pbx01.corp.example.com
-```
-
-**Sample Output:**
-```
-| sip-sdp-codec-audit:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - SDP answer gated behind authentication (407)
-```
-
----
-
-### 12. **sip-server-fingerprint** - PBX Engine Fingerprint
-**Description:** Fingerprints the PBX engine behind the SIP service from Server and
-
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Sends one OPTIONS request and captures the response headers.
-- Classifies the engine and version from Server/User-Agent.
-- Records Allow, Supported and Accept capabilities.
-- Why it matters: The engine identity drives every other SIP audit: version-specific advisories, default dial-plan behaviour and vendor hardening guides. The Allow/Supported profile shows which extensions and methods the platform runs.
-- Safety: a single read-only OPTIONS exchange; no registration state is touched.
-
-**How to Execute:**
-```bash
-nmap -p 5060 --script sip-server-fingerprint -sU pbx01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script sip-server-fingerprint -sU --script-args 'sip-server-fingerprint.timeout=8,sip-server-fingerprint.maxrequests=48,sip-server-fingerprint.retries=1' pbx01.corp.example.com
-```
-
-**Sample Output:**
-```
-| sip-server-fingerprint:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - PBX identified: Kamailio 5.7.2
 ```
 
 ---
@@ -410,7 +425,65 @@ nmap -p 5061 --script sip-tls-cert-validation --script-args 'sip-tls-cert-valida
 
 ---
 
-### 14. **sip-unauth-options-enum** - Anonymous OPTIONS Capability Enum
+### 14. **sip-sdp-codec-audit** - SDP Codec Inventory Audit
+**Description:** Inspects the audio codecs the PBX offers in its SDP answer (G.711
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Sends one INVITE with a codec-probing SDP offer.
+- Extracts every m=audio payload with its rtpmap name.
+- Grades the inventory and the media transport security.
+- Why it matters: Codec inventory drives bandwidth planning and interop, and flags low-bitrate codecs (G.729, Speex, iLBC) whose transcoding and quality trade-offs need explicit approval. The media protocol row doubles as an SRTP posture check.
+- Safety: one SDP exchange, no media transmitted.
+
+**How to Execute:**
+```bash
+nmap -p 5060 --script sip-sdp-codec-audit -sU pbx01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script sip-sdp-codec-audit -sU --script-args 'sip-sdp-codec-audit.timeout=8,sip-sdp-codec-audit.maxrequests=48,sip-sdp-codec-audit.retries=1' pbx01.corp.example.com
+```
+
+**Sample Output:**
+```
+| sip-sdp-codec-audit:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - SDP answer gated behind authentication (407)
+```
+
+---
+
+### 15. **sip-server-fingerprint** - PBX Engine Fingerprint
+**Description:** Fingerprints the PBX engine behind the SIP service from Server and
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Sends one OPTIONS request and captures the response headers.
+- Classifies the engine and version from Server/User-Agent.
+- Records Allow, Supported and Accept capabilities.
+- Why it matters: The engine identity drives every other SIP audit: version-specific advisories, default dial-plan behaviour and vendor hardening guides. The Allow/Supported profile shows which extensions and methods the platform runs.
+- Safety: a single read-only OPTIONS exchange; no registration state is touched.
+
+**How to Execute:**
+```bash
+nmap -p 5060 --script sip-server-fingerprint -sU pbx01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script sip-server-fingerprint -sU --script-args 'sip-server-fingerprint.timeout=8,sip-server-fingerprint.maxrequests=48,sip-server-fingerprint.retries=1' pbx01.corp.example.com
+```
+
+**Sample Output:**
+```
+| sip-server-fingerprint:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - PBX identified: Kamailio 5.7.2
+```
+
+---
+
+### 16. **sip-unauth-options-enum** - Anonymous OPTIONS Capability Enum
 **Description:** Maps what an unauthenticated OPTIONS exchange discloses: whether the
 
 **Risk Level:** 🟢 LOW | **Category:** discovery, safe
@@ -437,62 +510,3 @@ nmap -p 23 --script sip-unauth-options-enum -sU --script-args 'sip-unauth-option
 |   Status: VULNERABLE - anonymous clients see sensitive methods: SUBSCRIBE
 ```
 
----
-
-### 15. **sip-unauthenticated-invite** - Open Call Relay (INVITE) Test
-**Description:** Sends one unauthenticated INVITE with a minimal SDP offer to test for
-
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
-
-**What it checks:**
-- Sends a single INVITE with an audit SDP offer (PCMU/PCMA/G.729).
-- Classifies the final answer: relayed (2xx), auth-gated (401/407), refused (403/404/486).
-- Tears the dialog down immediately with ACK/BYE on success.
-- Why it matters: A PBX that completes an anonymous INVITE lets anyone place calls at the owner's expense and reach internal dial plans. Auth-gated INVITE handling (401/407) is the expected control.
-- Safety: exactly one call attempt to the audit extension, cancelled right away; no DTMF, media or transfer is attempted.
-
-**How to Execute:**
-```bash
-nmap -p 5060 --script sip-unauthenticated-invite -sU pbx01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script sip-unauthenticated-invite -sU --script-args 'sip-unauthenticated-invite.timeout=8,sip-unauthenticated-invite.maxrequests=48,sip-unauthenticated-invite.retries=1' pbx01.corp.example.com
-```
-
-**Sample Output:**
-```
-| sip-unauthenticated-invite:
-|   Risk Level: 🔴 CRITICAL
-|   Status: SECURE - INVITE is auth-gated (407; realm corp.sip)
-```
-
----
-
-### 16. **sip-unauthenticated-register** - Unauthenticated REGISTER Test
-**Description:** Tests whether the SIP registrar accepts extension registration without
-
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
-
-**What it checks:**
-- Sends one anonymous REGISTER for the audit extension.
-- Classifies: accepted (200), digest challenge (401/407), refused (403), unknown extension (404).
-- Never follows the challenge with credentials.
-- Why it matters: An unauthenticated registration is full PBX account compromise: callers can receive the target extension's calls and place outbound ones (toll fraud). Registrars demanding a challenge on first attempt expose no surface.
-- Safety: a single REGISTER without credentials; the session closes immediately after classification.
-
-**How to Execute:**
-```bash
-nmap -p 5060 --script sip-unauthenticated-register -sU pbx01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script sip-unauthenticated-register -sU --script-args 'sip-unauthenticated-register.timeout=8,sip-unauthenticated-register.maxrequests=48,sip-unauthenticated-register.retries=1' pbx01.corp.example.com
-```
-
-**Sample Output:**
-```
-| sip-unauthenticated-register:
-|   Risk Level: 🔴 CRITICAL
-|   Status: SECURE - registrar demands digest authentication before any registration (401)
-```
-
----

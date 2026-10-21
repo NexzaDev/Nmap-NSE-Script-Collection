@@ -1,6 +1,19 @@
 # 🗄️ Database Security Audits
 
-**16 Nmap NSE scripts** for auditing database and data-store endpoints: unauthenticated access on Cassandra (CQL native protocol), ClickHouse (HTTP SQL), CouchDB (HTTP/JSON API), etcd (v2 + v3 keyspaces), InfluxDB (InfluxQL), MongoDB (OP_MSG hello/ping), Redis (PING/INFO/COMMAND INFO + bounded write probe), and memcached (stats surface); credential-posture checks on MySQL/MariaDB (empty-password login, SSL capability, full HandshakeV10 banner), PostgreSQL (SSLRequest offer, trust authentication), and SQL Server (TDS PRELOGIN encryption mode + build fingerprint); plus Neo4j's unauthenticated HTTP browser API. Every script speaks the real wire protocol — building and parsing the actual handshake/query frames by hand — and reports evidence-based verdicts.
+**16 Nmap NSE scripts** for auditing database and data-store endpoints:
+
+**Covers:**
+
+- Unauthenticated access on Cassandra (CQL native protocol)
+- ClickHouse (HTTP SQL)
+- CouchDB (HTTP/JSON API)
+- Etcd (v2 + v3 keyspaces)
+- InfluxDB (InfluxQL)
+- MongoDB (OP_MSG hello/ping)
+- Redis (PING/INFO/COMMAND INFO + bounded write probe)
+- Memcached (stats surface); credential-posture checks on MySQL/MariaDB (empty-password login, SSL capability, full HandshakeV10 banner)
+- PostgreSQL (SSLRequest offer, trust authentication)
+- SQL Server (TDS PRELOGIN encryption mode + build fingerprint); plus Neo4j's unauthenticated HTTP browser API. Every script speaks the real wire protocol — building and parsing the actual handshake/query frames by hand — and reports evidence-based verdicts
 
 **Ports:** 9042 (Cassandra), 8123 (ClickHouse), 5984 (CouchDB), 2379 (etcd), 8086 (InfluxDB), 11211 (memcached), 27017 (MongoDB), 1433 (SQL Server), 3306 (MySQL/MariaDB), 7474 (Neo4j), 5432 (PostgreSQL), 6379 (Redis) | **Protocols:** CQL binary v4, HTTP/1.1 JSON, RESP, memcached text, MySQL protocol v10, PostgreSQL FE/BE, TDS 7.x PRELOGIN, BSON/OP_MSG | **Total lines of Lua:** 34,626
 
@@ -11,21 +24,21 @@
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
 | 1 | [cassandra-unauth-check](#1-cassandra-unauth-check---unauthenticated-cql-native-access) | 🔴 CRITICAL | vuln, auth, safe | 2248 |
-| 2 | [clickhouse-unauth-check](#2-clickhouse-unauth-check---unauthenticated-http-sql) | 🟠 HIGH | vuln, safe | 2198 |
-| 3 | [couchdb-unauth-check](#3-couchdb-unauth-check---unauthenticated-httpjson-api) | 🔴 CRITICAL | vuln, safe | 2280 |
-| 4 | [etcd-unauth-keyspace](#4-etcd-unauth-keyspace---unauthenticated-keyspace-reads) | 🔴 CRITICAL | vuln, safe | 2242 |
-| 5 | [influxdb-unauth-check](#5-influxdb-unauth-check---unauthenticated-influxql) | 🔴 CRITICAL | vuln, safe | 2191 |
-| 6 | [memcached-stats-dump](#6-memcached-stats-dump---unauthenticated-stats-surface) | 🟡 MEDIUM | discovery, safe | 2203 |
-| 7 | [mongodb-unauthenticated-check](#7-mongodb-unauthenticated-check---unauthenticated-command-execution) | 🟡 MEDIUM | safe, discovery, vuln | 2154 |
-| 8 | [mssql-prelogin-check](#8-mssql-prelogin-check---encryption-posture--build-fingerprint) | 🟡 MEDIUM | safe, discovery | 2095 |
-| 9 | [mysql-banner-grab](#9-mysql-banner-grab---handshakev10-banner-capture) | 🟢 LOW | safe, discovery, version | 2157 |
+| 2 | [couchdb-unauth-check](#2-couchdb-unauth-check---unauthenticated-httpjson-api) | 🔴 CRITICAL | vuln, safe | 2280 |
+| 3 | [etcd-unauth-keyspace](#3-etcd-unauth-keyspace---unauthenticated-keyspace-reads) | 🔴 CRITICAL | vuln, safe | 2242 |
+| 4 | [influxdb-unauth-check](#4-influxdb-unauth-check---unauthenticated-influxql) | 🔴 CRITICAL | vuln, safe | 2191 |
+| 5 | [clickhouse-unauth-check](#5-clickhouse-unauth-check---unauthenticated-http-sql) | 🟠 HIGH | vuln, safe | 2198 |
+| 6 | [neo4j-unauth-browser](#6-neo4j-unauth-browser---unauthenticated-http-browser-api) | 🟠 HIGH | vuln, safe | 2151 |
+| 7 | [memcached-stats-dump](#7-memcached-stats-dump---unauthenticated-stats-surface) | 🟡 MEDIUM | discovery, safe | 2203 |
+| 8 | [mongodb-unauthenticated-check](#8-mongodb-unauthenticated-check---unauthenticated-command-execution) | 🟡 MEDIUM | safe, discovery, vuln | 2154 |
+| 9 | [mssql-prelogin-check](#9-mssql-prelogin-check---encryption-posture--build-fingerprint) | 🟡 MEDIUM | safe, discovery | 2095 |
 | 10 | [mysql-empty-password-check](#10-mysql-empty-password-check---empty-password-login) | 🟡 MEDIUM | safe, discovery, vuln | 2153 |
 | 11 | [mysql-ssl-support-check](#11-mysql-ssl-support-check---client_ssl-capability) | 🟡 MEDIUM | safe, discovery | 2112 |
-| 12 | [neo4j-unauth-browser](#12-neo4j-unauth-browser---unauthenticated-http-browser-api) | 🟠 HIGH | vuln, safe | 2151 |
-| 13 | [postgresql-ssl-support-check](#13-postgresql-ssl-support-check---sslrequest-offer) | 🟡 MEDIUM | safe, discovery | 2029 |
-| 14 | [postgresql-trust-auth-check](#14-postgresql-trust-auth-check---trust-authentication) | 🟡 MEDIUM | safe, discovery, vuln | 2097 |
-| 15 | [redis-admin-command-exposure](#15-redis-admin-command-exposure---administrative-command-surface) | 🟡 MEDIUM | safe, discovery, vuln | 2143 |
-| 16 | [redis-unauthenticated-access](#16-redis-unauthenticated-access---unauthenticated-command-execution) | 🟡 MEDIUM | safe, discovery, vuln | 2173 |
+| 12 | [postgresql-ssl-support-check](#12-postgresql-ssl-support-check---sslrequest-offer) | 🟡 MEDIUM | safe, discovery | 2029 |
+| 13 | [postgresql-trust-auth-check](#13-postgresql-trust-auth-check---trust-authentication) | 🟡 MEDIUM | safe, discovery, vuln | 2097 |
+| 14 | [redis-admin-command-exposure](#14-redis-admin-command-exposure---administrative-command-surface) | 🟡 MEDIUM | safe, discovery, vuln | 2143 |
+| 15 | [redis-unauthenticated-access](#15-redis-unauthenticated-access---unauthenticated-command-execution) | 🟡 MEDIUM | safe, discovery, vuln | 2173 |
+| 16 | [mysql-banner-grab](#16-mysql-banner-grab---handshakev10-banner-capture) | 🟢 LOW | safe, discovery, version | 2157 |
 
 ---
 
@@ -87,44 +100,7 @@ nmap -p 9042 --script cassandra-unauth-check --script-args cassandra-unauth-chec
 
 ---
 
-### 2. **clickhouse-unauth-check** - Unauthenticated HTTP SQL
-**Description:** Executes SELECT version() against the ClickHouse HTTP interface (port 8123). A 200 whose body is a bare version string means the default (or empty-password) user runs SQL anonymously (HIGH); a 401/403 means authentication is enforced. When open, it follows up with two read-only enumeration queries (system.tables count, SHOW DATABASES) and classifies the version line (22.x/23.3 EOL, 23.8/24.3 LTS).
-
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- credentialless SELECT version() success (HIGH)
-- system.tables / SHOW DATABASES enumeration (HIGH)
-- open interface with restricted enumeration (MEDIUM)
-- end-of-life ClickHouse line (MEDIUM)
-
-**How to Execute:**
-```bash
-# Basic scan
-nmap -p 8123 --script clickhouse-unauth-check target.example.com
-```
-
-**Sample Output:**
-```
-| clickhouse-unauth-check:
-|   Risk Level: 🟠 HIGH
-|   Status: AUDITED - ClickHouse HTTP interface checked for unauthenticated SQL.
-|   Findings:
-|     [HIGH] ClickHouse executed SELECT version() without authentication:
-|            the interface answers with version 23.8.12.14 - the default
-|            (or empty-password) user is usable by anyone who can reach
-|            port 8123 (unauth-sql) [evidence: GET /?query=SELECT+version() -> 200 23.8.12.14]
-|     [MEDIUM] the interface is open but the follow-up enumeration queries
-|              were not answered (open-restricted)
-|   Severity counts: CRITICAL=0 HIGH=1 MEDIUM=1 LOW=0 INFO=1
-|   Weighted score: 12
-|   clickhouse_version: 23.8.12.14
-|   version_query_status: 200
-```
-
----
-
-### 3. **couchdb-unauth-check** - Unauthenticated HTTP/JSON API
+### 2. **couchdb-unauth-check** - Unauthenticated HTTP/JSON API
 **Description:** Walks the CouchDB HTTP API (port 5984) without credentials: root banner + version, /_all_dbs database enumeration, /_membership cluster topology (node list, admin party, cookie hash), /_users user-document enumeration and /_local/_design design documents. A 200 on any data endpoint is a complete unauthenticated breach of the JSON API (CRITICAL); a 401/403 on the root is reported as enforced (INFO).
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -172,7 +148,7 @@ nmap -p 5984 --script couchdb-unauth-check target.example.com
 
 ---
 
-### 4. **etcd-unauth-keyspace** - Unauthenticated Keyspace Reads
+### 3. **etcd-unauth-keyspace** - Unauthenticated Keyspace Reads
 **Description:** Reads the etcd keyspace (port 2379) over both API generations: GET /v2/keys (legacy tree) and POST /v3/kv/range (modern prefix scan, base64-decoded). Every readable string value is scanned for embedded credential patterns (user:pass@ URLs, AWS-style access keys, private-key headers, bearer tokens) and flagged by key without printing the secret. An open v2 or v3 surface is CRITICAL; 401/403 on both is INFO.
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -212,7 +188,7 @@ nmap -p 2379 --script etcd-unauth-keyspace target.example.com
 
 ---
 
-### 5. **influxdb-unauth-check** - Unauthenticated InfluxQL
+### 4. **influxdb-unauth-check** - Unauthenticated InfluxQL
 **Description:** Executes InfluxQL against the InfluxDB HTTP API (port 8086) without credentials: /ping for version context, SHOW DATABASES for the core test, and SHOW MEASUREMENTS when the API is open. A 200 with data rows means the query API runs anonymously (CRITICAL); a 401/403 is INFO. The reported version line is classified (1.x EOL, 2.x supported).
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -249,7 +225,82 @@ nmap -p 8086 --script influxdb-unauth-check target.example.com
 
 ---
 
-### 6. **memcached-stats-dump** - Unauthenticated Stats Surface
+### 5. **clickhouse-unauth-check** - Unauthenticated HTTP SQL
+**Description:** Executes SELECT version() against the ClickHouse HTTP interface (port 8123). A 200 whose body is a bare version string means the default (or empty-password) user runs SQL anonymously (HIGH); a 401/403 means authentication is enforced. When open, it follows up with two read-only enumeration queries (system.tables count, SHOW DATABASES) and classifies the version line (22.x/23.3 EOL, 23.8/24.3 LTS).
+
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- credentialless SELECT version() success (HIGH)
+- system.tables / SHOW DATABASES enumeration (HIGH)
+- open interface with restricted enumeration (MEDIUM)
+- end-of-life ClickHouse line (MEDIUM)
+
+**How to Execute:**
+```bash
+# Basic scan
+nmap -p 8123 --script clickhouse-unauth-check target.example.com
+```
+
+**Sample Output:**
+```
+| clickhouse-unauth-check:
+|   Risk Level: 🟠 HIGH
+|   Status: AUDITED - ClickHouse HTTP interface checked for unauthenticated SQL.
+|   Findings:
+|     [HIGH] ClickHouse executed SELECT version() without authentication:
+|            the interface answers with version 23.8.12.14 - the default
+|            (or empty-password) user is usable by anyone who can reach
+|            port 8123 (unauth-sql) [evidence: GET /?query=SELECT+version() -> 200 23.8.12.14]
+|     [MEDIUM] the interface is open but the follow-up enumeration queries
+|              were not answered (open-restricted)
+|   Severity counts: CRITICAL=0 HIGH=1 MEDIUM=1 LOW=0 INFO=1
+|   Weighted score: 12
+|   clickhouse_version: 23.8.12.14
+|   version_query_status: 200
+```
+
+---
+
+### 6. **neo4j-unauth-browser** - Unauthenticated HTTP Browser API
+**Description:** Probes the Neo4j HTTP browser API (port 7474): GET /db/ returns the dbms JSON object (version, edition, address) and the full database inventory with states. A 200 with a parseable inventory is HIGH (the graph store's inventory — and usually its data — is anonymously reachable); 401/403 is INFO. Classifies the Neo4j line (3.5/4.x EOL, 5.x supported, 5.26 LTS).
+
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- unauthenticated /db/ with database inventory (HIGH)
+- unauthenticated /db/ without parseable inventory (MEDIUM)
+- unsupported Neo4j line (MEDIUM)
+- dbms version/edition/address (context)
+
+**How to Execute:**
+```bash
+# Basic scan
+nmap -p 7474 --script neo4j-unauth-browser target.example.com
+```
+
+**Sample Output:**
+```
+| neo4j-unauth-browser:
+|   Risk Level: 🟠 HIGH
+|   Status: AUDITED - Neo4j HTTP browser API checked for unauthenticated access.
+|   Findings:
+|     [HIGH] the Neo4j /db/ endpoint answers without authentication and
+|            lists 2 database(s): system (online), neo4j (online)
+|            (unauth-db-api)
+|     [MEDIUM] Neo4j 3.5.39 is on an unsupported line (version-eol)
+|   Severity counts: CRITICAL=0 HIGH=1 MEDIUM=1 LOW=0 INFO=0
+|   Weighted score: 11
+|   databases:
+|     1: system (online)
+|     2: neo4j (online)
+|   dbms_version: 3.5.39
+|   dbms_edition: enterprise
+```
+
+---
+
+### 7. **memcached-stats-dump** - Unauthenticated Stats Surface
 **Description:** Connects to memcached (port 11211) and collects VERSION, STATS and (best-effort) STATS settings — all of which memcached serves without authentication by design. Derives operational metrics (memory usage ratio, hit rate, eviction pressure, connection counts) and interprets the load: a hot cache is holding live production data, which raises the value of the equally unauthenticated GET path.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
@@ -288,7 +339,7 @@ nmap -p 11211 --script memcached-stats-dump target.example.com
 
 ---
 
-### 7. **mongodb-unauthenticated-check** - Unauthenticated Command Execution
+### 8. **mongodb-unauthenticated-check** - Unauthenticated Command Execution
 **Description:** Sends an OP_MSG hello (hand-constructed BSON) and a ping to MongoDB (port 27017) without authenticating. A successful hello proves the server executes commands for anonymous clients (MEDIUM); a BSON error with code 13 (Unauthorized) is the positive evidence that auth is enforced. Parses maxWireVersion → release era, isWritablePrimary, replica-set name, and classifies the version line (4.4/5.0 EOL, 6.0/7.0 LTS).
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
@@ -327,7 +378,7 @@ nmap -p 27017 --script mongodb-unauthenticated-check target.example.com
 
 ---
 
-### 8. **mssql-prelogin-check** - Encryption Posture & Build Fingerprint
+### 9. **mssql-prelogin-check** - Encryption Posture & Build Fingerprint
 **Description:** Performs a TDS PRELOGIN exchange against SQL Server (port 1433) with the encryption preference OFF — exactly what a generic client sends — and parses the response tokens: VERSION (build), ENCRYPTION, INSTOPT, THREADID, LANGUAGE, DATABASE. OFF/NOT_SUP means login packets travel in cleartext (MEDIUM); ON/REQ means a TDS-encrypted channel is negotiated (INFO). The build is mapped to the product line (15.0 = 2019, 16.0 = 2022, …) with its support window.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery
@@ -358,44 +409,6 @@ nmap -p 1433 --script mssql-prelogin-check target.example.com
 |   build_version: 15.0.4332.0
 |   encryption_mode: ENCRYPT_OFF
 |   product_line: SQL Server 2019
-```
-
----
-
-### 9. **mysql-banner-grab** - HandshakeV10 Banner Capture
-**Description:** Captures the full MySQL/MariaDB HandshakeV10 banner from the spontaneous server packet: version string, thread id, 32-bit capability flags with every set bit named, default charset, status flags, auth plugin, auth-data length and the SSL offer. Classifies the family (MySQL vs MariaDB) and release line with end-of-support state. Purely discovery — nothing is sent.
-
-**Risk Level:** 🟢 LOW | **Category:** safe, discovery, version
-
-**What it checks:**
-- server version string + family + support line (INFO/LOW when EOL)
-- full capability flag decoding (context)
-- auth plugin choice (mysql_native_password vs caching_sha2_password, INFO)
-- 21-byte v10 salt consistency (context)
-
-**How to Execute:**
-```bash
-# Basic scan
-nmap -p 3306 --script mysql-banner-grab target.example.com
-```
-
-**Sample Output:**
-```
-| mysql-banner-grab:
-|   Risk Level: 🟢 LOW
-|   Status: AUDITED - MySQL/MariaDB HandshakeV10 banner captured.
-|   Findings:
-|     [LOW] the banner reports MySQL 5.7.42-log, an unsupported line
-|           (MySQL 5.7 left Extended Support in October 2023) (version-eol)
-|     [INFO] the advertised auth plugin is mysql_native_password (legacy SHA1)
-|   Severity counts: CRITICAL=0 HIGH=0 MEDIUM=0 LOW=1 INFO=1
-|   Weighted score: 3
-|   server_version: 5.7.42-log
-|   server_family: MySQL
-|   capability_flags: 0x0008aa01
-|   auth_plugin: mysql_native_password
-|   ssl_offered: yes (CLIENT_SSL)
-|   auth_data_note: full 21-byte v10 salt, consistent with HandshakeV10
 ```
 
 ---
@@ -471,45 +484,7 @@ nmap -p 3306 --script mysql-ssl-support-check target.example.com
 
 ---
 
-### 12. **neo4j-unauth-browser** - Unauthenticated HTTP Browser API
-**Description:** Probes the Neo4j HTTP browser API (port 7474): GET /db/ returns the dbms JSON object (version, edition, address) and the full database inventory with states. A 200 with a parseable inventory is HIGH (the graph store's inventory — and usually its data — is anonymously reachable); 401/403 is INFO. Classifies the Neo4j line (3.5/4.x EOL, 5.x supported, 5.26 LTS).
-
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- unauthenticated /db/ with database inventory (HIGH)
-- unauthenticated /db/ without parseable inventory (MEDIUM)
-- unsupported Neo4j line (MEDIUM)
-- dbms version/edition/address (context)
-
-**How to Execute:**
-```bash
-# Basic scan
-nmap -p 7474 --script neo4j-unauth-browser target.example.com
-```
-
-**Sample Output:**
-```
-| neo4j-unauth-browser:
-|   Risk Level: 🟠 HIGH
-|   Status: AUDITED - Neo4j HTTP browser API checked for unauthenticated access.
-|   Findings:
-|     [HIGH] the Neo4j /db/ endpoint answers without authentication and
-|            lists 2 database(s): system (online), neo4j (online)
-|            (unauth-db-api)
-|     [MEDIUM] Neo4j 3.5.39 is on an unsupported line (version-eol)
-|   Severity counts: CRITICAL=0 HIGH=1 MEDIUM=1 LOW=0 INFO=0
-|   Weighted score: 11
-|   databases:
-|     1: system (online)
-|     2: neo4j (online)
-|   dbms_version: 3.5.39
-|   dbms_edition: enterprise
-```
-
----
-
-### 13. **postgresql-ssl-support-check** - SSLRequest Offer
+### 12. **postgresql-ssl-support-check** - SSLRequest Offer
 **Description:** Sends the 8-byte PostgreSQL SSLRequest (code 80877103) and parses the single-byte reply: 'S' means the server can negotiate TLS (INFO — the exposure depends on client sslmode policy and certificate trust); 'N' means the server refuses TLS and every connection is cleartext (MEDIUM). No handshake is completed and no credentials are involved.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery
@@ -542,7 +517,7 @@ nmap -p 5432 --script postgresql-ssl-support-check target.example.com
 
 ---
 
-### 14. **postgresql-trust-auth-check** - Trust Authentication
+### 13. **postgresql-trust-auth-check** - Trust Authentication
 **Description:** Sends a StartupMessage for the postgres user with no password (user/database configurable) and classifies the AuthenticationRequest: code 0 (AuthenticationOk) means pg_hba.conf is using trust authentication for this host — anyone on the network becomes the postgres superuser (MEDIUM); codes 3/5/9/12 mean a password exchange is required (INFO, method reported; SASL/SCRAM mechanism captured); an ErrorResponse is the positive denial evidence.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
@@ -579,7 +554,7 @@ nmap -p 5432 --script postgresql-trust-auth-check --script-args postgresql-trust
 
 ---
 
-### 15. **redis-admin-command-exposure** - Administrative Command Surface
+### 14. **redis-admin-command-exposure** - Administrative Command Surface
 **Description:** After establishing the auth posture with PING, sends COMMAND INFO for a fixed list of 15 administrative commands (FLUSHALL, FLUSHDB, CONFIG, SHUTDOWN, DEBUG, SLAVEOF, REPLICAOF, MODULE, SCRIPT, EVAL, SAVE, BGSAVE, BGREWRITEAOF, KEYS, SCAN) and reports which are present in the server's command table. COMMAND INFO does not execute any of them. Present admin commands are MEDIUM; the dangerous subset (CONFIG, SHUTDOWN, SLAVEOF/REPLICAOF, MODULE, EVAL, DEBUG) is additionally HIGH.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
@@ -615,7 +590,7 @@ nmap -p 6379 --script redis-admin-command-exposure target.example.com
 
 ---
 
-### 16. **redis-unauthenticated-access** - Unauthenticated Command Execution
+### 15. **redis-unauthenticated-access** - Unauthenticated Command Execution
 **Description:** Sends PING to Redis (port 6379) without AUTH: a PONG means commands execute anonymously (MEDIUM); -NOAUTH means auth is enforced (INFO). When open, it parses INFO (version, memory, hit rate, clients), performs one bounded write probe — SET/GET/DEL on a unique per-host key that is always deleted again, leaving no residue — and classifies the Redis line (4.x/5.x EOL, 6.x aging, 7.x supported).
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
@@ -655,6 +630,42 @@ nmap -p 6379 --script redis-unauthenticated-access --script-args redis-unauthent
 ```
 
 ---
+
+### 16. **mysql-banner-grab** - HandshakeV10 Banner Capture
+**Description:** Captures the full MySQL/MariaDB HandshakeV10 banner from the spontaneous server packet: version string, thread id, 32-bit capability flags with every set bit named, default charset, status flags, auth plugin, auth-data length and the SSL offer. Classifies the family (MySQL vs MariaDB) and release line with end-of-support state. Purely discovery — nothing is sent.
+
+**Risk Level:** 🟢 LOW | **Category:** safe, discovery, version
+
+**What it checks:**
+- server version string + family + support line (INFO/LOW when EOL)
+- full capability flag decoding (context)
+- auth plugin choice (mysql_native_password vs caching_sha2_password, INFO)
+- 21-byte v10 salt consistency (context)
+
+**How to Execute:**
+```bash
+# Basic scan
+nmap -p 3306 --script mysql-banner-grab target.example.com
+```
+
+**Sample Output:**
+```
+| mysql-banner-grab:
+|   Risk Level: 🟢 LOW
+|   Status: AUDITED - MySQL/MariaDB HandshakeV10 banner captured.
+|   Findings:
+|     [LOW] the banner reports MySQL 5.7.42-log, an unsupported line
+|           (MySQL 5.7 left Extended Support in October 2023) (version-eol)
+|     [INFO] the advertised auth plugin is mysql_native_password (legacy SHA1)
+|   Severity counts: CRITICAL=0 HIGH=0 MEDIUM=0 LOW=1 INFO=1
+|   Weighted score: 3
+|   server_version: 5.7.42-log
+|   server_family: MySQL
+|   capability_flags: 0x0008aa01
+|   auth_plugin: mysql_native_password
+|   ssl_offered: yes (CLIENT_SSL)
+|   auth_data_note: full 21-byte v10 salt, consistent with HandshakeV10
+```
 
 ## Typical Scan
 

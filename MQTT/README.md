@@ -1,6 +1,26 @@
 # 📡 MQTT Security Audits
 
-**16 Nmap NSE scripts** for auditing MQTT message brokers: unauthenticated broker access and anonymous publish, default/weak IoT credential sweeps, root-wildcard and sensitive-namespace topic ACL bypass, retained-message harvesting, $SYS internal metric disclosure, broker engine fingerprinting, duplicate Client-ID session hijacking and privileged Client-ID acceptance, KeepAlive extremes (session pinning), packet-size limit enforcement, legacy protocol-level support, the QoS 2 exactly-once state machine (four-step handshake + grant table), Last Will and Testament injection (including retained wills), and TLS/mTLS client-certificate enforcement on the 8883 listener. Every script speaks real MQTT 3.1.1 bytes over TCP - CONNECT/CONNACK, SUBSCRIBE/SUBACK, PUBLISH/PUBACK/PUBREC/PUBREL/PUBCOMP, PINGREQ/PINGRESP, UNSUBSCRIBE and DISCONNECT - and turns the observed protocol facts into evidence-based findings. All probes are bounded, use auditor-owned topics (nmap-audit/*) with inert payloads, and never touch device control channels.
+**16 Nmap NSE scripts** for auditing MQTT message brokers:
+
+**Covers:**
+
+- Unauthenticated broker access and anonymous publish
+- Default/weak IoT credential sweeps
+- Root-wildcard and sensitive-namespace topic ACL bypass
+- Retained-message harvesting
+- $SYS internal metric disclosure
+- Broker engine fingerprinting
+- Duplicate Client-ID session hijacking and privileged Client-ID acceptance
+- KeepAlive extremes (session pinning)
+- Packet-size limit enforcement
+- Legacy protocol-level support
+- The QoS 2 exactly-once state machine (four-step handshake + grant table)
+- Last Will and Testament injection (including retained wills)
+- TLS/mTLS client-certificate enforcement on the 8883 listener
+
+Every script speaks real MQTT 3.1.1 bytes over TCP - CONNECT/CONNACK, SUBSCRIBE/SUBACK, PUBLISH/PUBACK/PUBREC/PUBREL/PUBCOMP, PINGREQ/PINGRESP, UNSUBSCRIBE and DISCONNECT - and turns the observed protocol facts into evidence-based findings.
+
+All probes are bounded, use auditor-owned topics (nmap-audit/*) with inert payloads, and never touch device control channels.
 
 **Ports:** 1883, 8883, 1884 (TLS scripts: 8883, 8884, 8885) or matched `mqtt`/`mqtt-s`/`mosquitto`/`emqx` service | **Protocol:** MQTT 3.1.1 (MQTT-3.1.1 OASIS standard) over plain TCP and TLS | **Total lines of Lua:** 29,113
 
@@ -10,9 +30,9 @@
 
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [mqtt-unauthenticated-broker](#1-mqtt-unauthenticated-broker---anonymous-broker-access) | 🔴 CRITICAL | vuln, auth, discovery, safe | 1805 |
-| 2 | [mqtt-anonymous-publish-test](#2-mqtt-anonymous-publish-test---anonymous-write-injection) | 🔴 CRITICAL | vuln, auth, safe | 1809 |
-| 3 | [mqtt-default-credentials](#3-mqtt-default-credentials---factory-default-secret-sweep) | 🔴 CRITICAL | vuln, auth, safe | 1818 |
+| 1 | [mqtt-anonymous-publish-test](#1-mqtt-anonymous-publish-test---anonymous-write-injection) | 🔴 CRITICAL | vuln, auth, safe | 1809 |
+| 2 | [mqtt-default-credentials](#2-mqtt-default-credentials---factory-default-secret-sweep) | 🔴 CRITICAL | vuln, auth, safe | 1818 |
+| 3 | [mqtt-unauthenticated-broker](#3-mqtt-unauthenticated-broker---anonymous-broker-access) | 🔴 CRITICAL | vuln, auth, discovery, safe | 1805 |
 | 4 | [mqtt-wildcard-subscribe-all](#4-mqtt-wildcard-subscribe-all---root-wildcard-wiretap) | 🔴 CRITICAL | vuln, discovery, safe | 1816 |
 | 5 | [mqtt-clientid-spoof-hijack](#5-mqtt-clientid-spoof-hijack---duplicate-client-id-session-takeover) | 🟠 HIGH | vuln, safe | 1837 |
 | 6 | [mqtt-tls-client-cert-check](#6-mqtt-tls-client-cert-check---mtls-enforcement-on-the-tls-listener) | 🟠 HIGH | vuln, defensive, safe | 1842 |
@@ -24,52 +44,12 @@
 | 12 | [mqtt-sys-topic-leak](#12-mqtt-sys-topic-leak---internal-broker-metrics-exposure) | 🟡 MEDIUM | discovery, safe | 1795 |
 | 13 | [mqtt-topic-permission-bypass](#13-mqtt-topic-permission-bypass---topic-acl-enforcement) | 🟡 MEDIUM | vuln, auth, safe | 1840 |
 | 14 | [mqtt-will-message-injection](#14-mqtt-will-message-injection---last-will-and-testament-registration) | 🟡 MEDIUM | vuln, safe | 1825 |
-| 15 | [mqtt-protocol-version-support](#15-mqtt-protocol-version-support---legacy-protocol-level-probes) | 🟢 LOW | discovery, safe | 1797 |
-| 16 | [mqtt-broker-fingerprint](#16-mqtt-broker-fingerprint---engine-and-version-identification) | 🟢 LOW | discovery, safe | 1853 |
+| 15 | [mqtt-broker-fingerprint](#15-mqtt-broker-fingerprint---engine-and-version-identification) | 🟢 LOW | discovery, safe | 1853 |
+| 16 | [mqtt-protocol-version-support](#16-mqtt-protocol-version-support---legacy-protocol-level-probes) | 🟢 LOW | discovery, safe | 1797 |
 
 ---
 
-### 1. **mqtt-unauthenticated-broker** - Anonymous Broker Access
-**Description:** Detects unauthenticated MQTT brokers by sending an anonymous MQTT 3.1.1 CONNECT and classifying the CONNACK return code; when accepted, measures the actual anonymous capabilities ($SYS read, publish, keepalive).
-
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, auth, discovery, safe
-
-**What it checks:**
-- Anonymous CONNECT (no username/password, no will) and CONNACK return-code classification (0x00 accepted / 0x04 bad credentials / 0x05 not authorized / protocol refusals)
-- Anonymous $SYS/# subscription (internal metric disclosure)
-- Single QoS 1 publish into an auditor-owned topic with PUBACK verification
-- PINGREQ/PINGRESP keepalive check on the anonymous session
-
-**How to Execute:**
-```bash
-nmap -p 1883 --script mqtt-unauthenticated-broker target.example.com
-
-# Custom client id
-nmap -p 1883 --script mqtt-unauthenticated-broker --script-args 'mqtt-unauthenticated-broker.client_id=audit-01' target.example.com
-```
-
-**Sample Output:**
-```
-| mqtt-unauthenticated-broker:
-|   Risk Level: 🔴 CRITICAL
-|   Status: VULNERABLE - Unauthenticated Anonymous MQTT Broker Access Permitted
-|   Severity counts: CRITICAL=2 HIGH=0 MEDIUM=1 LOW=0 INFO=0
-|   Findings:
-|     [CRITICAL] Anonymous client can publish messages to the broker (nmap-audit/publish-probe)
-|     [CRITICAL] MQTT broker accepted an anonymous connection with no credentials (anonymous CONNECT)
-|     [MEDIUM] Broker internal $SYS metrics are readable without authentication ($SYS/#)
-|   Anonymous Capability Probes:
-|     $SYS/# subscription: accepted, 10 $SYS metric messages delivered
-|     Publish probe (nmap-audit/publish-probe): accepted (PUBACK received, QoS 1)
-|   CONNACK Analysis:
-|     CONNACK Return Code: 0x00 (Connection accepted)
-|     Protocol: MQTT 3.1.1 (protocol level 4)
-|   CVSS Score: 9.8 (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
-```
-
----
-
-### 2. **mqtt-anonymous-publish-test** - Anonymous Write Injection
+### 1. **mqtt-anonymous-publish-test** - Anonymous Write Injection
 **Description:** Evaluates whether unauthenticated clients can publish messages: QoS 0 and QoS 1 publish acceptance plus a retain-flagged publish verified by re-subscribing to confirm persistence in the broker.
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, auth, safe
@@ -104,7 +84,7 @@ nmap -p 1883 --script mqtt-anonymous-publish-test target.example.com
 
 ---
 
-### 3. **mqtt-default-credentials** - Factory Default Secret Sweep
+### 2. **mqtt-default-credentials** - Factory Default Secret Sweep
 **Description:** Attempts broker authentication with a curated set of documented default/weak IoT credential pairs (admin/admin, guest/guest, test/test, mqtt/mqtt, root/root, ...); any accepted pair is a CRITICAL finding with the documented source.
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, auth, safe
@@ -135,6 +115,46 @@ nmap -p 1883 --script mqtt-default-credentials target.example.com
 |   Accepted Default Pairs:
 |     Pair 1: admin / admin
 |     Pair 1 source: EMQX / HiveMQ / many IoT gateways ship admin/admin out of the box
+|   CVSS Score: 9.8 (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+```
+
+---
+
+### 3. **mqtt-unauthenticated-broker** - Anonymous Broker Access
+**Description:** Detects unauthenticated MQTT brokers by sending an anonymous MQTT 3.1.1 CONNECT and classifying the CONNACK return code; when accepted, measures the actual anonymous capabilities ($SYS read, publish, keepalive).
+
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, auth, discovery, safe
+
+**What it checks:**
+- Anonymous CONNECT (no username/password, no will) and CONNACK return-code classification (0x00 accepted / 0x04 bad credentials / 0x05 not authorized / protocol refusals)
+- Anonymous $SYS/# subscription (internal metric disclosure)
+- Single QoS 1 publish into an auditor-owned topic with PUBACK verification
+- PINGREQ/PINGRESP keepalive check on the anonymous session
+
+**How to Execute:**
+```bash
+nmap -p 1883 --script mqtt-unauthenticated-broker target.example.com
+
+# Custom client id
+nmap -p 1883 --script mqtt-unauthenticated-broker --script-args 'mqtt-unauthenticated-broker.client_id=audit-01' target.example.com
+```
+
+**Sample Output:**
+```
+| mqtt-unauthenticated-broker:
+|   Risk Level: 🔴 CRITICAL
+|   Status: VULNERABLE - Unauthenticated Anonymous MQTT Broker Access Permitted
+|   Severity counts: CRITICAL=2 HIGH=0 MEDIUM=1 LOW=0 INFO=0
+|   Findings:
+|     [CRITICAL] Anonymous client can publish messages to the broker (nmap-audit/publish-probe)
+|     [CRITICAL] MQTT broker accepted an anonymous connection with no credentials (anonymous CONNECT)
+|     [MEDIUM] Broker internal $SYS metrics are readable without authentication ($SYS/#)
+|   Anonymous Capability Probes:
+|     $SYS/# subscription: accepted, 10 $SYS metric messages delivered
+|     Publish probe (nmap-audit/publish-probe): accepted (PUBACK received, QoS 1)
+|   CONNACK Analysis:
+|     CONNACK Return Code: 0x00 (Connection accepted)
+|     Protocol: MQTT 3.1.1 (protocol level 4)
 |   CVSS Score: 9.8 (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
 ```
 
@@ -530,41 +550,7 @@ nmap -p 1883 --script mqtt-will-message-injection target.example.com
 
 ---
 
-### 15. **mqtt-protocol-version-support** - Legacy Protocol Level Probes
-**Description:** Probes the broker across protocol versions - MQTT 3.1.1 (name MQTT, level 4), legacy MQTT 3.1 (name MQIsdp, level 3), MQTT 3.1 (name MQTT, level 3) and an invalid level 0 handshake - recording the CONNACK code for each.
-
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Per-(protocol name, level) CONNECT matrix with fresh connections
-- Accepted / protocol-refused (0x01) / other classification per probe
-- Legacy 3.1 availability flag (policy decision signal)
-- Invalid level 0 acceptance (parser robustness observation)
-
-**How to Execute:**
-```bash
-nmap -p 1883 --script mqtt-protocol-version-support target.example.com
-```
-
-**Sample Output:**
-```
-| mqtt-protocol-version-support:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - Broker supports MQTT 3.1.1 and legacy MQTT 3.1 (MQIsdp)
-|   Severity counts: CRITICAL=0 HIGH=0 MEDIUM=0 LOW=2 INFO=0
-|   Findings:
-|     [LOW] Legacy MQTT 3.1 (MQIsdp) protocol level is still negotiable (protocol versions)
-|   Protocol Version Matrix:
-|     MQTT 3.1.1 (name MQTT, level 4): ACCEPTED (CONNACK 0x00)
-|     MQTT 3.1 legacy (name MQIsdp, level 3): ACCEPTED (CONNACK 0x00)
-|     MQTT 3.1 (name MQTT, level 3): ACCEPTED (CONNACK 0x00)
-|     invalid level 0 handshake: refused (CONNACK 0x01 Connection refused: unacceptable protocol level)
-|   CVSS Score: n/a - discovery audit
-```
-
----
-
-### 16. **mqtt-broker-fingerprint** - Engine and Version Identification
+### 15. **mqtt-broker-fingerprint** - Engine and Version Identification
 **Description:** Harvests the $SYS hierarchy from an anonymous session and runs a signature engine (version-string patterns first, then key-set signatures) to identify the broker engine and major version - Mosquitto 1.x/2.x, EMQX 4/5, HiveMQ, VerneMQ, ActiveMQ - plus the fleet metrics that size the exposure.
 
 **Risk Level:** 🟢 LOW | **Category:** discovery, safe
@@ -603,6 +589,38 @@ nmap -p 1883 --script mqtt-broker-fingerprint target.example.com
 ```
 
 ---
+
+### 16. **mqtt-protocol-version-support** - Legacy Protocol Level Probes
+**Description:** Probes the broker across protocol versions - MQTT 3.1.1 (name MQTT, level 4), legacy MQTT 3.1 (name MQIsdp, level 3), MQTT 3.1 (name MQTT, level 3) and an invalid level 0 handshake - recording the CONNACK code for each.
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Per-(protocol name, level) CONNECT matrix with fresh connections
+- Accepted / protocol-refused (0x01) / other classification per probe
+- Legacy 3.1 availability flag (policy decision signal)
+- Invalid level 0 acceptance (parser robustness observation)
+
+**How to Execute:**
+```bash
+nmap -p 1883 --script mqtt-protocol-version-support target.example.com
+```
+
+**Sample Output:**
+```
+| mqtt-protocol-version-support:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - Broker supports MQTT 3.1.1 and legacy MQTT 3.1 (MQIsdp)
+|   Severity counts: CRITICAL=0 HIGH=0 MEDIUM=0 LOW=2 INFO=0
+|   Findings:
+|     [LOW] Legacy MQTT 3.1 (MQIsdp) protocol level is still negotiable (protocol versions)
+|   Protocol Version Matrix:
+|     MQTT 3.1.1 (name MQTT, level 4): ACCEPTED (CONNACK 0x00)
+|     MQTT 3.1 legacy (name MQIsdp, level 3): ACCEPTED (CONNACK 0x00)
+|     MQTT 3.1 (name MQTT, level 3): ACCEPTED (CONNACK 0x00)
+|     invalid level 0 handshake: refused (CONNACK 0x01 Connection refused: unacceptable protocol level)
+|   CVSS Score: n/a - discovery audit
+```
 
 ## 🧰 Shared Infrastructure
 

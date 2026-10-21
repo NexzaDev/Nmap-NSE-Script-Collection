@@ -1,37 +1,50 @@
 # 📟 Telnet Security Audits
 
-**16 Nmap NSE scripts** for auditing Telnet/NVT services directly on the wire: a full IAC command-stream codec (WILL/WONT/DO/DONT exchange with escaped 0xFF handling, SB subnegotiations for TTYPE/NAWS/NEW-ENVIRON/AUTHENTICATION/ENCRYPT decoded against the IANA option registry incl. the Microsoft PRAGMA/SSPI-LOGON vendor options), RFC 2941 authentication-type and RFC 2946 encryption-type tables, staged login-flow probes (login/password/shell/menu/lockout outcome classification with prompt-shape recognition), device and BusyBox signature tables with advisory correlation, a safe IAC parser-robustness probe (protocol-legal frames only), bounded default-credential auditing (4 pairs by default, hard cap 8), a connection-capacity probe (max 8 short-lived sessions), and root-login surface detection that never sends a password. Every probe is a bounded, read-exchange-only session: no crash-inducing frames, no lockout-triggering loops, sessions close as soon as they are classified.
+**16 Nmap NSE scripts** for auditing Telnet/NVT services directly on the wire:
+
+**Covers:**
+
+- A full IAC command-stream codec (WILL/WONT/DO/DONT exchange with escaped 0xFF handling, SB subnegotiations for TTYPE/NAWS/NEW-ENVIRON/AUTHENTICATION/ENCRYPT decoded against the IANA option registry incl. the Microsoft PRAGMA/SSPI-LOGON vendor options)
+- RFC 2941 authentication-type and RFC 2946 encryption-type tables
+- Staged login-flow probes (login/password/shell/menu/lockout outcome classification with prompt-shape recognition)
+- Device and BusyBox signature tables with advisory correlation
+- A safe IAC parser-robustness probe (protocol-legal frames only)
+- Bounded default-credential auditing (4 pairs by default, hard cap 8)
+- A connection-capacity probe (max 8 short-lived sessions)
+- Root-login surface detection that never sends a password
+
+**Every probe is a bounded, read-exchange-only session:**
+
+- No crash-inducing frames
+- No lockout-triggering loops
+- Sessions close as soon as they are classified.
 
 **Ports:** 23/tcp | **Protocol:** Telnet NVT (RFC 854/855), options RFC 856-2946 + vendor 138/139, RFC 1572 NEW-ENVIRON, RFC 2941 AUTHENTICATION | **Total lines of Lua:** 23,869
 
-
 ---
-
 
 ## 📋 Script Index
 
-
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [telnet-auth-option-bypass](#1-telnet-auth-option-bypass-authentication-option-bypass-check-rfc-2941) | 🔴 CRITICAL | vuln, safe | 1510 |
-| 2 | [telnet-banner-grab](#2-telnet-banner-grab-login-banner-capture) | 🟢 LOW | discovery, safe | 1491 |
-| 3 | [telnet-busybox-fingerprint](#3-telnet-busybox-fingerprint-busybox-embedded-telnetd-fingerprint) | 🟡 MEDIUM | discovery, safe | 1495 |
-| 4 | [telnet-cisco-login-prompt](#4-telnet-cisco-login-prompt-cisco-style-login-prompt-detection) | 🟡 MEDIUM | discovery, safe | 1491 |
-| 5 | [telnet-cleartext-warning](#5-telnet-cleartext-warning-cleartext-credential-path-warning) | 🔴 CRITICAL | defensive, safe | 1509 |
-| 6 | [telnet-default-credentials](#6-telnet-default-credentials-default-credential-audit) | 🔴 CRITICAL | vuln, safe | 1511 |
-| 7 | [telnet-encrypt-option-audit](#7-telnet-encrypt-option-audit-rfc-2946-encryption-option-audit) | 🟡 MEDIUM | defensive, safe | 1478 |
-| 8 | [telnet-env-var-disclosure](#8-telnet-env-var-disclosure-new-environ-variable-disclosure) | 🟠 HIGH | vuln, safe | 1501 |
-| 9 | [telnet-escape-character-enum](#9-telnet-escape-character-enum-escape-character-nvt-control-enum) | 🟢 LOW | discovery, safe | 1471 |
-| 10 | [telnet-iac-buffer-overflow](#10-telnet-iac-buffer-overflow-iac-parser-robustness-surface) | 🔴 CRITICAL | vuln, safe | 1504 |
-| 11 | [telnet-max-connections-dos](#11-telnet-max-connections-dos-connection-capacity-behaviour) | 🟡 MEDIUM | defensive, safe | 1468 |
-| 12 | [telnet-option-negotiation](#12-telnet-option-negotiation-full-option-negotiation-map) | 🟢 LOW | discovery, safe | 1482 |
-| 13 | [telnet-root-login-allowed](#13-telnet-root-login-allowed-root-login-surface-check) | 🟠 HIGH | vuln, safe | 1500 |
-| 14 | [telnet-subnegotiation-leak](#14-telnet-subnegotiation-leak-subnegotiation-disclosure-map) | 🟢 LOW | discovery, safe | 1494 |
-| 15 | [telnet-terminal-type-dos](#15-telnet-terminal-type-dos-terminal-type-handling-robustness) | 🟡 MEDIUM | defensive, safe | 1479 |
-| 16 | [telnet-windows-auth-ntlm](#16-telnet-windows-auth-ntlm-windows-telnet-ntlm-sspi-fingerprint) | 🟡 MEDIUM | discovery, safe | 1485 |
+| 1 | [telnet-auth-option-bypass](#1-telnet-auth-option-bypass---authentication-option-bypass-check-rfc-2941) | 🔴 CRITICAL | vuln, safe | 1510 |
+| 2 | [telnet-cleartext-warning](#2-telnet-cleartext-warning---cleartext-credential-path-warning) | 🔴 CRITICAL | defensive, safe | 1509 |
+| 3 | [telnet-default-credentials](#3-telnet-default-credentials---default-credential-audit) | 🔴 CRITICAL | vuln, safe | 1511 |
+| 4 | [telnet-iac-buffer-overflow](#4-telnet-iac-buffer-overflow---iac-parser-robustness-surface) | 🔴 CRITICAL | vuln, safe | 1504 |
+| 5 | [telnet-env-var-disclosure](#5-telnet-env-var-disclosure---new-environ-variable-disclosure) | 🟠 HIGH | vuln, safe | 1501 |
+| 6 | [telnet-root-login-allowed](#6-telnet-root-login-allowed---root-login-surface-check) | 🟠 HIGH | vuln, safe | 1500 |
+| 7 | [telnet-busybox-fingerprint](#7-telnet-busybox-fingerprint---busybox-embedded-telnetd-fingerprint) | 🟡 MEDIUM | discovery, safe | 1495 |
+| 8 | [telnet-cisco-login-prompt](#8-telnet-cisco-login-prompt---cisco-style-login-prompt-detection) | 🟡 MEDIUM | discovery, safe | 1491 |
+| 9 | [telnet-encrypt-option-audit](#9-telnet-encrypt-option-audit---rfc-2946-encryption-option-audit) | 🟡 MEDIUM | defensive, safe | 1478 |
+| 10 | [telnet-max-connections-dos](#10-telnet-max-connections-dos---connection-capacity-behaviour) | 🟡 MEDIUM | defensive, safe | 1468 |
+| 11 | [telnet-terminal-type-dos](#11-telnet-terminal-type-dos---terminal-type-handling-robustness) | 🟡 MEDIUM | defensive, safe | 1479 |
+| 12 | [telnet-windows-auth-ntlm](#12-telnet-windows-auth-ntlm---windows-telnet--ntlm-sspi-fingerprint) | 🟡 MEDIUM | discovery, safe | 1485 |
+| 13 | [telnet-banner-grab](#13-telnet-banner-grab---login-banner-capture) | 🟢 LOW | discovery, safe | 1491 |
+| 14 | [telnet-escape-character-enum](#14-telnet-escape-character-enum---escape-character--nvt-control-enum) | 🟢 LOW | discovery, safe | 1471 |
+| 15 | [telnet-option-negotiation](#15-telnet-option-negotiation---full-option-negotiation-map) | 🟢 LOW | discovery, safe | 1482 |
+| 16 | [telnet-subnegotiation-leak](#16-telnet-subnegotiation-leak---subnegotiation-disclosure-map) | 🟢 LOW | discovery, safe | 1494 |
 
 ---
-
 
 ### 1. **telnet-auth-option-bypass** - AUTHENTICATION Option Bypass Check (RFC 2941)
 **Description:** Probes the RFC 2941 AUTHENTICATION option (option 37) and the login flow
@@ -62,94 +75,7 @@ nmap -p 23 --script telnet-auth-option-bypass --script-args 'telnet-auth-option-
 
 ---
 
-### 2. **telnet-banner-grab** - Login Banner Capture
-**Description:** Captures the telnet login banner and the initial option negotiation,
-
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Opens a session and reads the greeting until the first prompt.
-- Classifies the banner (vendors, BusyBox version, firmware, OS hint).
-- Reports the option flight that accompanied the banner.
-- Why it matters: Telnet banners are historically chatty: device models, firmware builds and internal hostnames leak to anyone connecting to 23/tcp. The same banner feeds every other fingerprint in this folder.
-- Safety: one connection closed after the greeting; nothing is submitted.
-
-**How to Execute:**
-```bash
-nmap -p 23 --script telnet-banner-grab switch01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script telnet-banner-grab --script-args 'telnet-banner-grab.timeout=8,telnet-banner-grab.maxrequests=32' switch01.corp.example.com
-```
-
-**Sample Output:**
-```
-| telnet-banner-grab:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - banner captured with build identity (F3.2)
-```
-
----
-
-### 3. **telnet-busybox-fingerprint** - BusyBox Embedded Telnetd Fingerprint
-**Description:** Fingerprints BusyBox-based embedded telnetd from the banner (version
-
-**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
-
-**What it checks:**
-- Reads the banner and extracts the BusyBox version and build date.
-- Correlates the version against the advisory family table.
-- Reports the embedded-stack verdict.
-- Why it matters: BusyBox telnetd ships on millions of IoT/ICS devices; pre-1.30 builds carry long-known telnet and shell advisories. Knowing the exact build anchors the device in time (EOL status, unpatched CVE exposure).
-- Safety: banner read only.
-
-**How to Execute:**
-```bash
-nmap -p 23 --script telnet-busybox-fingerprint switch01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script telnet-busybox-fingerprint --script-args 'telnet-busybox-fingerprint.timeout=8,telnet-busybox-fingerprint.maxrequests=32' switch01.corp.example.com
-```
-
-**Sample Output:**
-```
-| telnet-busybox-fingerprint:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - embedded BusyBox telnetd 1.20.2 (pre-1.30 advisory family)
-```
-
----
-
-### 4. **telnet-cisco-login-prompt** - Cisco-Style Login Prompt Detection
-**Description:** Detects Cisco-style login flows on telnet: the "User Access
-
-**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
-
-**What it checks:**
-- Reads the greeting and classifies the Cisco markers.
-- Follows the prompt flow one step (a non-existent audit user) to see whether the service asks password-only.
-- Reports the IOS-style exposure.
-- Why it matters: Cisco IOS telnet (vty lines) is a classic management surface; its exposure history (default vty access, easy vty brute force) makes the fingerprint directly actionable. Password-only prompts indicate no local username enforcement.
-- Safety: one connection and one rejected audit username; no password guessing.
-
-**How to Execute:**
-```bash
-nmap -p 23 --script telnet-cisco-login-prompt switch01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script telnet-cisco-login-prompt --script-args 'telnet-cisco-login-prompt.timeout=8,telnet-cisco-login-prompt.maxrequests=32' switch01.corp.example.com
-```
-
-**Sample Output:**
-```
-| telnet-cisco-login-prompt:
-|   Risk Level: 🟡 MEDIUM
-|   Status: INFORMATIONAL - no Cisco-style login markers on this telnet service
-```
-
----
-
-### 5. **telnet-cleartext-warning** - Cleartext Credential Path Warning
+### 2. **telnet-cleartext-warning** - Cleartext Credential Path Warning
 **Description:** Grades the cleartext exposure of the telnet service end to end: option
 
 **Risk Level:** 🔴 CRITICAL | **Category:** defensive, safe
@@ -178,7 +104,7 @@ nmap -p 23 --script telnet-cleartext-warning --script-args 'telnet-cleartext-war
 
 ---
 
-### 6. **telnet-default-credentials** - Default Credential Audit
+### 3. **telnet-default-credentials** - Default Credential Audit
 **Description:** Tests a bounded list of factory-default telnet credential pairs and
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -207,94 +133,7 @@ nmap -p 23 --script telnet-default-credentials --script-args 'telnet-default-cre
 
 ---
 
-### 7. **telnet-encrypt-option-audit** - RFC 2946 Encryption Option Audit
-**Description:** Audits RFC 2946 Telnet Encryption (option 38) support: whether the
-
-**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
-
-**What it checks:**
-- Scans for option 38 negotiation (DO/WILL).
-- Decodes ENCRYPT SUPPORT subnegotiations into named cipher types.
-- Pairs the encryption posture with the cleartext login state.
-- Why it matters: The encryption option (DES/3DES/CAST era) is the only in-protocol transport protection telnet ever standardised; its types are cryptographically deprecated but still better than nothing. A server that offers encryption but also serves cleartext logins gives clients an unsafe default.
-- Safety: option negotiation plus one rejected login attempt.
-
-**How to Execute:**
-```bash
-nmap -p 23 --script telnet-encrypt-option-audit switch01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script telnet-encrypt-option-audit --script-args 'telnet-encrypt-option-audit.timeout=8,telnet-encrypt-option-audit.maxrequests=32' switch01.corp.example.com
-```
-
-**Sample Output:**
-```
-| telnet-encrypt-option-audit:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - no RFC 2946 encryption offered; credentials ride the stream in cleartext (login state failed-retry)
-```
-
----
-
-### 8. **telnet-env-var-disclosure** - NEW-ENVIRON Variable Disclosure
-**Description:** Requests the server environment via the NEW-ENVIRON option (RFC 1572,
-
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- Completes the banner negotiation, then sends a NEW-ENVIRON SEND for the standard variable set.
-- Decodes IS/INFO subnegotiations into name/value rows.
-- Grades the disclosure.
-- Why it matters: Environment values leak usernames, home directories and internal paths - exactly the data needed to aim credential attacks. Older stacks also echo OLD-ENVIRON (option 36) data, which predates the size fixes for the 1995-era env-disclosure bugs.
-- Safety: one read-only environment request per session.
-
-**How to Execute:**
-```bash
-nmap -p 23 --script telnet-env-var-disclosure switch01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script telnet-env-var-disclosure --script-args 'telnet-env-var-disclosure.timeout=8,telnet-env-var-disclosure.maxrequests=32' switch01.corp.example.com
-```
-
-**Sample Output:**
-```
-| telnet-env-var-disclosure:
-|   Risk Level: 🟠 HIGH
-|   Status: VULNERABLE - server discloses environment data via NEW-ENVIRON (USER, admin, HOME, /root, PATH, /bin:/sbin, SHELL, /bin/sh)
-```
-
----
-
-### 9. **telnet-escape-character-enum** - Escape Character / NVT Control Enum
-**Description:** Enumerates the telnet control-plane behaviours available to a client:
-
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Reads the banner and searches for escape-character mentions.
-- Sends one AYT and records the response (NOP/GA/text reply).
-- Reports GA suppression and timing-mark behaviour.
-- Why it matters: The control verbs (AYT, GA, IP/BRK) reveal how faithfully the daemon implements the NVT spec and shape out-of-band behaviour clients rely on. Escape-character banners (Cisco-style "escape character is '^]'") fingerprint the platform family.
-- Safety: one AYT per session; control verbs never include IP/AO which would abort sessions on some stacks.
-
-**How to Execute:**
-```bash
-nmap -p 23 --script telnet-escape-character-enum switch01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script telnet-escape-character-enum --script-args 'telnet-escape-character-enum.timeout=8,telnet-escape-character-enum.maxrequests=32' switch01.corp.example.com
-```
-
-**Sample Output:**
-```
-| telnet-escape-character-enum:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - control plane responsive (AYT answered)
-```
-
----
-
-### 10. **telnet-iac-buffer-overflow** - IAC Parser Robustness Surface
+### 4. **telnet-iac-buffer-overflow** - IAC Parser Robustness Surface
 **Description:** Probes the IAC/subnegotiation parsing surface with legal-but-stressful
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -323,65 +162,36 @@ nmap -p 23 --script telnet-iac-buffer-overflow --script-args 'telnet-iac-buffer-
 
 ---
 
-### 11. **telnet-max-connections-dos** - Connection Capacity Behaviour
-**Description:** Measures connection capacity behaviour within strictly safe bounds:
+### 5. **telnet-env-var-disclosure** - NEW-ENVIRON Variable Disclosure
+**Description:** Requests the server environment via the NEW-ENVIRON option (RFC 1572,
 
-**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
 
 **What it checks:**
-- Opens up to probecount sequential connections (hard cap 8).
-- Records banner service and closes each session at once.
-- Classifies limiting behaviour (none, partial, strict).
-- Why it matters: Unbounded telnet capacity is a classic exhaustion target (device consoles often cap at 1-4 sessions by design). Documented acceptance behaviour shows whether the daemon applies any session limiting before an attacker measures it differently.
-- Safety: at most eight short-lived sessions, one at a time; no flooding, no held connections, never exhausting the service.
+- Completes the banner negotiation, then sends a NEW-ENVIRON SEND for the standard variable set.
+- Decodes IS/INFO subnegotiations into name/value rows.
+- Grades the disclosure.
+- Why it matters: Environment values leak usernames, home directories and internal paths - exactly the data needed to aim credential attacks. Older stacks also echo OLD-ENVIRON (option 36) data, which predates the size fixes for the 1995-era env-disclosure bugs.
+- Safety: one read-only environment request per session.
 
 **How to Execute:**
 ```bash
-nmap -p 23 --script telnet-max-connections-dos switch01.corp.example.com
+nmap -p 23 --script telnet-env-var-disclosure switch01.corp.example.com
 
 # Tuned request budget
-nmap -p 23 --script telnet-max-connections-dos --script-args 'telnet-max-connections-dos.timeout=8,telnet-max-connections-dos.maxrequests=64,telnet-max-connections-dos.probecount=5' switch01.corp.example.com
+nmap -p 23 --script telnet-env-var-disclosure --script-args 'telnet-env-var-disclosure.timeout=8,telnet-env-var-disclosure.maxrequests=32' switch01.corp.example.com
 ```
 
 **Sample Output:**
 ```
-| telnet-max-connections-dos:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - every probe session served (5/5); no limit within the safe bound
+| telnet-env-var-disclosure:
+|   Risk Level: 🟠 HIGH
+|   Status: VULNERABLE - server discloses environment data via NEW-ENVIRON (USER, admin, HOME, /root, PATH, /bin:/sbin, SHELL, /bin/sh)
 ```
 
 ---
 
-### 12. **telnet-option-negotiation** - Full Option Negotiation Map
-**Description:** Maps the full telnet option negotiation: the server's initial WILL/DO
-
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Captures the initial option flight with the banner.
-- Sends DO probes for the audit option set and records WILL/WONT answers plus subnegotiations.
-- Renders the complete negotiation map.
-- Why it matters: The option map is the protocol-level fingerprint of the daemon and the fastest way to spot unsafe capabilities (encryption offered but unused, vendor logon options, missing SGA). Every other telnet check in this folder keys off this map.
-- Safety: option negotiation only; no login data sent.
-
-**How to Execute:**
-```bash
-nmap -p 23 --script telnet-option-negotiation switch01.corp.example.com
-
-# Tuned request budget
-nmap -p 23 --script telnet-option-negotiation --script-args 'telnet-option-negotiation.timeout=8,telnet-option-negotiation.maxrequests=32' switch01.corp.example.com
-```
-
-**Sample Output:**
-```
-| telnet-option-negotiation:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - negotiation map captured (6 entries; auth=false, encrypt=false)
-```
-
----
-
-### 13. **telnet-root-login-allowed** - Root Login Surface Check
+### 6. **telnet-root-login-allowed** - Root Login Surface Check
 **Description:** Checks whether the root account is reachable through the telnet login
 
 **Risk Level:** 🟠 HIGH | **Category:** vuln, safe
@@ -410,36 +220,123 @@ nmap -p 23 --script telnet-root-login-allowed --script-args 'telnet-root-login-a
 
 ---
 
-### 14. **telnet-subnegotiation-leak** - Subnegotiation Disclosure Map
-**Description:** Enumerates the subnegotiations a telnet server initiates or echoes
+### 7. **telnet-busybox-fingerprint** - BusyBox Embedded Telnetd Fingerprint
+**Description:** Fingerprints BusyBox-based embedded telnetd from the banner (version
 
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
 
 **What it checks:**
-- Captures server-initiated subnegotiations in the banner flight.
-- Completes one TTYPE reply and observes whether the daemon echoes or re-queries.
-- Classifies every observed subnegotiation into a disclosure class.
-- Why it matters: Server-initiated TTYPE/NAWS/ENVIRON requests make clients broadcast their terminal identity, window size and environment before any auth. The subneg map shows which client-disclosure surfaces the daemon exercises by default.
-- Safety: option/subnegotiation exchanges only; the TTYPE value is a generic audit string.
+- Reads the banner and extracts the BusyBox version and build date.
+- Correlates the version against the advisory family table.
+- Reports the embedded-stack verdict.
+- Why it matters: BusyBox telnetd ships on millions of IoT/ICS devices; pre-1.30 builds carry long-known telnet and shell advisories. Knowing the exact build anchors the device in time (EOL status, unpatched CVE exposure).
+- Safety: banner read only.
 
 **How to Execute:**
 ```bash
-nmap -p 23 --script telnet-subnegotiation-leak switch01.corp.example.com
+nmap -p 23 --script telnet-busybox-fingerprint switch01.corp.example.com
 
 # Tuned request budget
-nmap -p 23 --script telnet-subnegotiation-leak --script-args 'telnet-subnegotiation-leak.timeout=8,telnet-subnegotiation-leak.maxrequests=32' switch01.corp.example.com
+nmap -p 23 --script telnet-busybox-fingerprint --script-args 'telnet-busybox-fingerprint.timeout=8,telnet-busybox-fingerprint.maxrequests=32' switch01.corp.example.com
 ```
 
 **Sample Output:**
 ```
-| telnet-subnegotiation-leak:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - server queries client terminal identity (TTYPE=true, NAWS=true)
+| telnet-busybox-fingerprint:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - embedded BusyBox telnetd 1.20.2 (pre-1.30 advisory family)
 ```
 
 ---
 
-### 15. **telnet-terminal-type-dos** - Terminal-Type Handling Robustness
+### 8. **telnet-cisco-login-prompt** - Cisco-Style Login Prompt Detection
+**Description:** Detects Cisco-style login flows on telnet: the "User Access
+
+**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+
+**What it checks:**
+- Reads the greeting and classifies the Cisco markers.
+- Follows the prompt flow one step (a non-existent audit user) to see whether the service asks password-only.
+- Reports the IOS-style exposure.
+- Why it matters: Cisco IOS telnet (vty lines) is a classic management surface; its exposure history (default vty access, easy vty brute force) makes the fingerprint directly actionable. Password-only prompts indicate no local username enforcement.
+- Safety: one connection and one rejected audit username; no password guessing.
+
+**How to Execute:**
+```bash
+nmap -p 23 --script telnet-cisco-login-prompt switch01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script telnet-cisco-login-prompt --script-args 'telnet-cisco-login-prompt.timeout=8,telnet-cisco-login-prompt.maxrequests=32' switch01.corp.example.com
+```
+
+**Sample Output:**
+```
+| telnet-cisco-login-prompt:
+|   Risk Level: 🟡 MEDIUM
+|   Status: INFORMATIONAL - no Cisco-style login markers on this telnet service
+```
+
+---
+
+### 9. **telnet-encrypt-option-audit** - RFC 2946 Encryption Option Audit
+**Description:** Audits RFC 2946 Telnet Encryption (option 38) support: whether the
+
+**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
+
+**What it checks:**
+- Scans for option 38 negotiation (DO/WILL).
+- Decodes ENCRYPT SUPPORT subnegotiations into named cipher types.
+- Pairs the encryption posture with the cleartext login state.
+- Why it matters: The encryption option (DES/3DES/CAST era) is the only in-protocol transport protection telnet ever standardised; its types are cryptographically deprecated but still better than nothing. A server that offers encryption but also serves cleartext logins gives clients an unsafe default.
+- Safety: option negotiation plus one rejected login attempt.
+
+**How to Execute:**
+```bash
+nmap -p 23 --script telnet-encrypt-option-audit switch01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script telnet-encrypt-option-audit --script-args 'telnet-encrypt-option-audit.timeout=8,telnet-encrypt-option-audit.maxrequests=32' switch01.corp.example.com
+```
+
+**Sample Output:**
+```
+| telnet-encrypt-option-audit:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - no RFC 2946 encryption offered; credentials ride the stream in cleartext (login state failed-retry)
+```
+
+---
+
+### 10. **telnet-max-connections-dos** - Connection Capacity Behaviour
+**Description:** Measures connection capacity behaviour within strictly safe bounds:
+
+**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
+
+**What it checks:**
+- Opens up to probecount sequential connections (hard cap 8).
+- Records banner service and closes each session at once.
+- Classifies limiting behaviour (none, partial, strict).
+- Why it matters: Unbounded telnet capacity is a classic exhaustion target (device consoles often cap at 1-4 sessions by design). Documented acceptance behaviour shows whether the daemon applies any session limiting before an attacker measures it differently.
+- Safety: at most eight short-lived sessions, one at a time; no flooding, no held connections, never exhausting the service.
+
+**How to Execute:**
+```bash
+nmap -p 23 --script telnet-max-connections-dos switch01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script telnet-max-connections-dos --script-args 'telnet-max-connections-dos.timeout=8,telnet-max-connections-dos.maxrequests=64,telnet-max-connections-dos.probecount=5' switch01.corp.example.com
+```
+
+**Sample Output:**
+```
+| telnet-max-connections-dos:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - every probe session served (5/5); no limit within the safe bound
+```
+
+---
+
+### 11. **telnet-terminal-type-dos** - Terminal-Type Handling Robustness
 **Description:** Sends a protocol-legal, 60-character terminal-type value in the TTYPE
 
 **Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
@@ -468,7 +365,7 @@ nmap -p 23 --script telnet-terminal-type-dos --script-args 'telnet-terminal-type
 
 ---
 
-### 16. **telnet-windows-auth-ntlm** - Windows Telnet / NTLM-SSPI Fingerprint
+### 12. **telnet-windows-auth-ntlm** - Windows Telnet / NTLM-SSPI Fingerprint
 **Description:** Fingerprints Microsoft telnet servers and their NTLM/SSPI authentication
 
 **Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
@@ -496,3 +393,118 @@ nmap -p 23 --script telnet-windows-auth-ntlm --script-args 'telnet-windows-auth-
 ```
 
 ---
+
+### 13. **telnet-banner-grab** - Login Banner Capture
+**Description:** Captures the telnet login banner and the initial option negotiation,
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Opens a session and reads the greeting until the first prompt.
+- Classifies the banner (vendors, BusyBox version, firmware, OS hint).
+- Reports the option flight that accompanied the banner.
+- Why it matters: Telnet banners are historically chatty: device models, firmware builds and internal hostnames leak to anyone connecting to 23/tcp. The same banner feeds every other fingerprint in this folder.
+- Safety: one connection closed after the greeting; nothing is submitted.
+
+**How to Execute:**
+```bash
+nmap -p 23 --script telnet-banner-grab switch01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script telnet-banner-grab --script-args 'telnet-banner-grab.timeout=8,telnet-banner-grab.maxrequests=32' switch01.corp.example.com
+```
+
+**Sample Output:**
+```
+| telnet-banner-grab:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - banner captured with build identity (F3.2)
+```
+
+---
+
+### 14. **telnet-escape-character-enum** - Escape Character / NVT Control Enum
+**Description:** Enumerates the telnet control-plane behaviours available to a client:
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Reads the banner and searches for escape-character mentions.
+- Sends one AYT and records the response (NOP/GA/text reply).
+- Reports GA suppression and timing-mark behaviour.
+- Why it matters: The control verbs (AYT, GA, IP/BRK) reveal how faithfully the daemon implements the NVT spec and shape out-of-band behaviour clients rely on. Escape-character banners (Cisco-style "escape character is '^]'") fingerprint the platform family.
+- Safety: one AYT per session; control verbs never include IP/AO which would abort sessions on some stacks.
+
+**How to Execute:**
+```bash
+nmap -p 23 --script telnet-escape-character-enum switch01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script telnet-escape-character-enum --script-args 'telnet-escape-character-enum.timeout=8,telnet-escape-character-enum.maxrequests=32' switch01.corp.example.com
+```
+
+**Sample Output:**
+```
+| telnet-escape-character-enum:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - control plane responsive (AYT answered)
+```
+
+---
+
+### 15. **telnet-option-negotiation** - Full Option Negotiation Map
+**Description:** Maps the full telnet option negotiation: the server's initial WILL/DO
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Captures the initial option flight with the banner.
+- Sends DO probes for the audit option set and records WILL/WONT answers plus subnegotiations.
+- Renders the complete negotiation map.
+- Why it matters: The option map is the protocol-level fingerprint of the daemon and the fastest way to spot unsafe capabilities (encryption offered but unused, vendor logon options, missing SGA). Every other telnet check in this folder keys off this map.
+- Safety: option negotiation only; no login data sent.
+
+**How to Execute:**
+```bash
+nmap -p 23 --script telnet-option-negotiation switch01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script telnet-option-negotiation --script-args 'telnet-option-negotiation.timeout=8,telnet-option-negotiation.maxrequests=32' switch01.corp.example.com
+```
+
+**Sample Output:**
+```
+| telnet-option-negotiation:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - negotiation map captured (6 entries; auth=false, encrypt=false)
+```
+
+---
+
+### 16. **telnet-subnegotiation-leak** - Subnegotiation Disclosure Map
+**Description:** Enumerates the subnegotiations a telnet server initiates or echoes
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Captures server-initiated subnegotiations in the banner flight.
+- Completes one TTYPE reply and observes whether the daemon echoes or re-queries.
+- Classifies every observed subnegotiation into a disclosure class.
+- Why it matters: Server-initiated TTYPE/NAWS/ENVIRON requests make clients broadcast their terminal identity, window size and environment before any auth. The subneg map shows which client-disclosure surfaces the daemon exercises by default.
+- Safety: option/subnegotiation exchanges only; the TTYPE value is a generic audit string.
+
+**How to Execute:**
+```bash
+nmap -p 23 --script telnet-subnegotiation-leak switch01.corp.example.com
+
+# Tuned request budget
+nmap -p 23 --script telnet-subnegotiation-leak --script-args 'telnet-subnegotiation-leak.timeout=8,telnet-subnegotiation-leak.maxrequests=32' switch01.corp.example.com
+```
+
+**Sample Output:**
+```
+| telnet-subnegotiation-leak:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - server queries client terminal identity (TTYPE=true, NAWS=true)
+```
+

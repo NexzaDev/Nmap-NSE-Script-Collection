@@ -1,66 +1,52 @@
 # ☁️ Cloud Metadata & SSRF Security Audits
 
-**16 Nmap NSE scripts** for auditing the cloud metadata / SSRF attack surface over HTTP: a metadata knowledge layer covering the seven-provider matrix (AWS IMDS, Alibaba ECS, GCP, Azure, Oracle OCI, DigitalOcean, OpenStack) with their required headers and gate semantics, IP-obfuscation encodings (decimal/hex/octal) with link-local and RFC1918 classification, IMDSv2 token issuance and the enforcement verdict matrix, AWS roles/credential-document/identity-document decoders, GCP flavor checks and service-account token parsing, Azure instance and managed-identity token parsing, droplet/OpenStack/OCI instance parsers, user-data and cloud-init classifiers with secret-pattern masking, scheme-risk grading, redirect-chain and DNS-rebinding classifiers. The suite audits the two classic cloud pivots: direct metadata readability (IMDSv1 openness, IAM credential documents, user-data secrets, service-account tokens, instance identities) and SSRF primitives that reach it indirectly (open fetch proxies with plain and obfuscated targets, DNS-rebinding TOCTOU windows, Kubernetes API relays). Credential material is always masked in output - key ids, secrets and tokens appear as lengths and short masked prefixes - and every probe is a bounded read-only HTTP exchange.
+**16 Nmap NSE scripts** for auditing the cloud metadata / SSRF attack surface over HTTP:
+
+**Covers:**
+
+- A metadata knowledge layer covering the seven-provider matrix (AWS IMDS, Alibaba ECS, GCP, Azure, Oracle OCI, DigitalOcean, OpenStack) with their required headers and gate semantics
+- IP-obfuscation encodings (decimal/hex/octal) with link-local and RFC1918 classification
+- IMDSv2 token issuance and the enforcement verdict matrix
+- AWS roles/credential-document/identity-document decoders
+- GCP flavor checks and service-account token parsing
+- Azure instance and managed-identity token parsing
+- Droplet/OpenStack/OCI instance parsers
+- User-data and cloud-init classifiers with secret-pattern masking
+- Scheme-risk grading
+- Redirect-chain and DNS-rebinding classifiers
+
+The suite audits the two classic cloud pivots: direct metadata readability (IMDSv1 openness, IAM credential documents, user-data secrets, service-account tokens, instance identities) and SSRF primitives that reach it indirectly (open fetch proxies with plain and obfuscated targets, DNS-rebinding TOCTOU windows, Kubernetes API relays)
+
+Credential material is always masked in output - key ids, secrets and tokens appear as lengths and short masked prefixes - and every probe is a bounded read-only HTTP exchange.
 
 **Port:** target HTTP service (any port with `shortport.http`) | **Metadata targets:** 169.254.169.254, 100.100.100.200 | **Protocols:** HTTP/1.1 (IMDS, IMDSv2, metadata APIs, fetch proxies) | **Total lines of Lua:** 23,996
 
-
 ---
-
 
 ## 📋 Script Index
 
-
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [alibaba-cloud-metadata-leak](#1-alibaba-cloud-metadata-leak-alibaba-ecs-metadata-100.100.100.200) | 🟠 HIGH | vuln, safe | 1520 |
-| 2 | [aws-iam-credentials-leak](#2-aws-iam-credentials-leak-aws-iam-role-credential-documents) | 🔴 CRITICAL | vuln, safe | 1518 |
-| 3 | [aws-metadata-imdsv1-check](#3-aws-metadata-imdsv1-check-aws-imdsv1-openness-check) | 🔴 CRITICAL | vuln, safe | 1501 |
-| 4 | [aws-user-data-script-leak](#4-aws-user-data-script-leak-ec2-user-data-secret-classification) | 🔴 CRITICAL | vuln, safe | 1522 |
-| 5 | [azure-imds-identity-leak](#5-azure-imds-identity-leak-azure-imds-instance-managed-identity) | 🔴 CRITICAL | vuln, safe | 1511 |
-| 6 | [cloud-imds-v2-token-enforced](#6-cloud-imds-v2-token-enforced-imdsv2-token-enforcement-verification) | 🟢 LOW | defensive, safe | 1464 |
-| 7 | [cloud-init-log-exposure](#7-cloud-init-log-exposure-cloud-init-artifact-exposure) | 🟡 MEDIUM | discovery, safe | 1477 |
-| 8 | [cloud-instance-identity-doc](#8-cloud-instance-identity-doc-aws-identity-document-disclosure) | 🟢 LOW | discovery, safe | 1471 |
-| 9 | [cloud-metadata-ip-proxy-probe](#9-cloud-metadata-ip-proxy-probe-proxy-fetch-ssrf-plain-+-obfuscated-ips) | 🟡 MEDIUM | defensive, safe | 1492 |
-| 10 | [cloud-ssrf-dns-rebinding-check](#10-cloud-ssrf-dns-rebinding-check-dns-rebinding-double-lookup-probe) | 🟡 MEDIUM | defensive, safe | 1483 |
-| 11 | [digitalocean-metadata-leak](#11-digitalocean-metadata-leak-digitalocean-droplet-metadata) | 🟠 HIGH | vuln, safe | 1505 |
-| 12 | [gcp-metadata-flavor-check](#12-gcp-metadata-flavor-check-gcp-metadata-flavor-header-matrix) | 🔴 CRITICAL | vuln, safe | 1504 |
-| 13 | [gcp-service-account-token](#13-gcp-service-account-token-gcp-service-account-token-minting) | 🔴 CRITICAL | vuln, safe | 1530 |
-| 14 | [kubernetes-pod-metadata-ssrf](#14-kubernetes-pod-metadata-ssrf-kubernetes-api-via-fetch-proxy) | 🔴 CRITICAL | vuln, safe | 1514 |
-| 15 | [openstack-metadata-probe](#15-openstack-metadata-probe-openstack-tenant-metadata) | 🟡 MEDIUM | discovery, safe | 1470 |
-| 16 | [oracle-cloud-metadata-leak](#16-oracle-cloud-metadata-leak-oracle-cloud-instance-metadata) | 🟠 HIGH | vuln, safe | 1514 |
+| 1 | [aws-iam-credentials-leak](#1-aws-iam-credentials-leak---aws-iam-role-credential-documents) | 🔴 CRITICAL | vuln, safe | 1518 |
+| 2 | [aws-metadata-imdsv1-check](#2-aws-metadata-imdsv1-check---aws-imdsv1-openness-check) | 🔴 CRITICAL | vuln, safe | 1501 |
+| 3 | [aws-user-data-script-leak](#3-aws-user-data-script-leak---ec2-user-data-secret-classification) | 🔴 CRITICAL | vuln, safe | 1522 |
+| 4 | [azure-imds-identity-leak](#4-azure-imds-identity-leak---azure-imds-instance--managed-identity) | 🔴 CRITICAL | vuln, safe | 1511 |
+| 5 | [gcp-metadata-flavor-check](#5-gcp-metadata-flavor-check---gcp-metadata-flavor-header-matrix) | 🔴 CRITICAL | vuln, safe | 1504 |
+| 6 | [gcp-service-account-token](#6-gcp-service-account-token---gcp-service-account-token-minting) | 🔴 CRITICAL | vuln, safe | 1530 |
+| 7 | [kubernetes-pod-metadata-ssrf](#7-kubernetes-pod-metadata-ssrf---kubernetes-api-via-fetch-proxy) | 🔴 CRITICAL | vuln, safe | 1514 |
+| 8 | [alibaba-cloud-metadata-leak](#8-alibaba-cloud-metadata-leak---alibaba-ecs-metadata-100.100.100.200) | 🟠 HIGH | vuln, safe | 1520 |
+| 9 | [digitalocean-metadata-leak](#9-digitalocean-metadata-leak---digitalocean-droplet-metadata) | 🟠 HIGH | vuln, safe | 1505 |
+| 10 | [oracle-cloud-metadata-leak](#10-oracle-cloud-metadata-leak---oracle-cloud-instance-metadata) | 🟠 HIGH | vuln, safe | 1514 |
+| 11 | [cloud-init-log-exposure](#11-cloud-init-log-exposure---cloud-init-artifact-exposure) | 🟡 MEDIUM | discovery, safe | 1477 |
+| 12 | [cloud-metadata-ip-proxy-probe](#12-cloud-metadata-ip-proxy-probe---proxy-fetch-ssrf-plain--obfuscated-ips) | 🟡 MEDIUM | defensive, safe | 1492 |
+| 13 | [cloud-ssrf-dns-rebinding-check](#13-cloud-ssrf-dns-rebinding-check---dns-rebinding-double-lookup-probe) | 🟡 MEDIUM | defensive, safe | 1483 |
+| 14 | [openstack-metadata-probe](#14-openstack-metadata-probe---openstack-tenant-metadata) | 🟡 MEDIUM | discovery, safe | 1470 |
+| 15 | [cloud-imds-v2-token-enforced](#15-cloud-imds-v2-token-enforced---imdsv2-token-enforcement-verification) | 🟢 LOW | defensive, safe | 1464 |
+| 16 | [cloud-instance-identity-doc](#16-cloud-instance-identity-doc---aws-identity-document-disclosure) | 🟢 LOW | discovery, safe | 1471 |
 
 ---
 
-
-### 1. **alibaba-cloud-metadata-leak** - Alibaba ECS Metadata (100.100.100.200)
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- GETs the metadata index on the Alibaba endpoint.
-- Reads instance-id and lists RAM security-credentials roles.
-- Grades the exposure with role names as evidence.
-- Why it matters: Alibaba metadata mirrors the AWS pattern; an open service hands out instance identity and RAM role names whose credential documents are one additional request away. The dedicated 100.100.100.200 endpoint is often forgotten in firewall rules that only mention the AWS address.
-- Safety: three read-only GETs; no RAM credential documents are fetched and no values are rendered unmasked.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script alibaba-cloud-metadata-leak target.corp.example.com
-
-# Tuned request budget
-nmap -p 80,8080,443 --script alibaba-cloud-metadata-leak --script-args 'alibaba-cloud-metadata-leak.timeout=8,alibaba-cloud-metadata-leak.maxrequests=48' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| alibaba-cloud-metadata-leak:
-|   Risk Level: 🟠 HIGH
-|   Status: VULNERABLE - Alibaba ECS metadata readable without authentication
-```
-
----
-
-### 2. **aws-iam-credentials-leak** - AWS IAM Role Credential Documents
+### 1. **aws-iam-credentials-leak** - AWS IAM Role Credential Documents
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -88,7 +74,7 @@ nmap -p 80,8080,443 --script aws-iam-credentials-leak --script-args 'aws-iam-cre
 
 ---
 
-### 3. **aws-metadata-imdsv1-check** - AWS IMDSv1 Openness Check
+### 2. **aws-metadata-imdsv1-check** - AWS IMDSv1 Openness Check
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -116,7 +102,7 @@ nmap -p 80,8080,443 --script aws-metadata-imdsv1-check --script-args 'aws-metada
 
 ---
 
-### 4. **aws-user-data-script-leak** - EC2 user-data Secret Classification
+### 3. **aws-user-data-script-leak** - EC2 user-data Secret Classification
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -144,7 +130,7 @@ nmap -p 80,8080,443 --script aws-user-data-script-leak --script-args 'aws-user-d
 
 ---
 
-### 5. **azure-imds-identity-leak** - Azure IMDS Instance & Managed Identity
+### 4. **azure-imds-identity-leak** - Azure IMDS Instance & Managed Identity
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -172,171 +158,7 @@ nmap -p 80,8080,443 --script azure-imds-identity-leak --script-args 'azure-imds-
 
 ---
 
-### 6. **cloud-imds-v2-token-enforced** - IMDSv2 Token Enforcement Verification
-**Risk Level:** 🟢 LOW | **Category:** defensive, safe
-
-**What it checks:**
-- PUTs /latest/api/token and parses the issued session token.
-- GETs metadata without the token (expect 401 when enforced).
-- GETs metadata with the token (expect 200) to confirm token flow.
-- Grades enforcement with actionable notes.
-- Why it matters: HttpTokens=optional is a false sense of security: attackers simply skip the token. Only the observed 401-without-token / 200-with-token matrix proves real enforcement. This is the positive-control probe defenders can schedule to catch enforcement drift after AMI or launch-template changes.
-- Safety: three read-only exchanges; the issued token is used once for verification and then discarded (masked in output).
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script cloud-imds-v2-token-enforced target.corp.example.com
-
-# Tuned request budget
-nmap -p 80,8080,443 --script cloud-imds-v2-token-enforced --script-args 'cloud-imds-v2-token-enforced.timeout=8,cloud-imds-v2-token-enforced.maxrequests=48' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| cloud-imds-v2-token-enforced:
-|   Risk Level: 🟢 LOW
-|   Status: VULNERABLE - token endpoint exists but token-less reads still succeed
-```
-
----
-
-### 7. **cloud-init-log-exposure** - cloud-init Artifact Exposure
-**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
-
-**What it checks:**
-- Probes the three common cloud-init artifact paths.
-- On content: profiles stages, datasource, instance id, token refs.
-- Grades the log exposure with masked evidence.
-- Why it matters: cloud-init logs record datasources, instance ids and sometimes the bootstrap tokens or curl lines used to fetch secrets. An exposed log turns a bland metadata service into a forensic gold mine and confirms the instance identity for follow-up attacks.
-- Safety: up to three read-only GETs; token-shaped strings are reported as counts and masked samples only.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script cloud-init-log-exposure target.corp.example.com
-
-# Tuned request budget
-nmap -p 80,8080,443 --script cloud-init-log-exposure --script-args 'cloud-init-log-exposure.timeout=8,cloud-init-log-exposure.maxrequests=48' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| cloud-init-log-exposure:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - cloud-init log exposes bootstrap identity material
-```
-
----
-
-### 8. **cloud-instance-identity-doc** - AWS Identity Document Disclosure
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- GETs /latest/dynamic/instance-identity/document token-less.
-- Parses accountId, instanceId, region, AZ, type, image.
-- Reports the disclosure with INFO/MEDIUM grading.
-- Why it matters: The identity document confirms the exact account, region and instance type - everything an attacker needs to aim console, STS or billing attacks and to price the value of the role they hope to steal. It is also a reliable AWS fingerprint when endpoints are proxied.
-- Safety: one read-only GET; no signature verification or STS calls are performed.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script cloud-instance-identity-doc target.corp.example.com
-
-# Tuned request budget
-nmap -p 80,8080,443 --script cloud-instance-identity-doc --script-args 'cloud-instance-identity-doc.timeout=8,cloud-instance-identity-doc.maxrequests=48' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| cloud-instance-identity-doc:
-|   Risk Level: 🟢 LOW
-|   Status: VULNERABLE - instance identity document readable without authentication
-```
-
----
-
-### 9. **cloud-metadata-ip-proxy-probe** - Proxy Fetch SSRF (Plain + Obfuscated IPs)
-**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
-
-**What it checks:**
-- Sends five /fetch?url= probes: index, instance-id, IAM roles, decimal-encoded and hex-encoded metadata URLs.
-- Classifies each answer: relayed content, marker seen, 4xx block.
-- Grades the proxy's SSRF posture.
-- Why it matters: Open URL-fetch features (webhooks, previewers, importers) are the classic SSRF doorway to 169.254.169.254 - the whole class of cloud credential theft starts here. Encoded IPs (decimal, hex, octal) bypass naive string filters, so the probe tests both plain and obfuscated forms.
-- Safety: read-only GETs through the target's own proxy; no schemes beyond http are attempted and no user data is fetched.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script cloud-metadata-ip-proxy-probe target.corp.example.com
-
-# Tuned request budget
-nmap -p 80,8080,443 --script cloud-metadata-ip-proxy-probe --script-args 'cloud-metadata-ip-proxy-probe.timeout=8,cloud-metadata-ip-proxy-probe.maxrequests=48' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| cloud-metadata-ip-proxy-probe:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - proxy fetch reaches metadata including obfuscated targets
-```
-
----
-
-### 10. **cloud-ssrf-dns-rebinding-check** - DNS Rebinding Double-Lookup Probe
-**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
-
-**What it checks:**
-- Asks the target resolver for the same name twice.
-- Classifies the pair (stable public / rebound to metadata / rebound to private / inconsistent).
-- Probes the fetch path for echoed connection IPs.
-- Grades the TOCTOU exposure.
-- Why it matters: Rebinding defeats IP allowlists: the first lookup passes the check, the second (at connect time) flips to 169.254.169.254 and the fetch relays straight into metadata. The probe needs no attacker DNS - it simply asks the resolver twice and classifies the delta.
-- Safety: three read-only requests; the probe hostname is audit-owned and no external DNS infrastructure is contacted beyond the target's resolver path.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script cloud-ssrf-dns-rebinding-check target.corp.example.com
-
-# Tuned request budget
-nmap -p 80,8080,443 --script cloud-ssrf-dns-rebinding-check --script-args 'cloud-ssrf-dns-rebinding-check.timeout=8,cloud-ssrf-dns-rebinding-check.maxrequests=48' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| cloud-ssrf-dns-rebinding-check:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - resolver answers switch into the metadata range on repeat lookups
-```
-
----
-
-### 11. **digitalocean-metadata-leak** - DigitalOcean Droplet Metadata
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- GETs /metadata/v1.json and parses droplet identity.
-- Cross-checks the plain /metadata/v1/hostname and /id endpoints.
-- Grades the disclosure.
-- Why it matters: Droplet id, region, hostname and enabled features are the targeting layer for control-plane and snapshot attacks. A reachable metadata endpoint also proves which SSRF primitive can pivot into cloud-specific data on this host.
-- Safety: three read-only GETs; no account tokens exist on this service and none are requested.
-
-**How to Execute:**
-```bash
-nmap -p 80,8080,443 --script digitalocean-metadata-leak target.corp.example.com
-
-# Tuned request budget
-nmap -p 80,8080,443 --script digitalocean-metadata-leak --script-args 'digitalocean-metadata-leak.timeout=8,digitalocean-metadata-leak.maxrequests=48' target.corp.example.com
-```
-
-**Sample Output:**
-```
-| digitalocean-metadata-leak:
-|   Risk Level: 🟠 HIGH
-|   Status: VULNERABLE - DigitalOcean droplet metadata readable without authentication
-```
-
----
-
-### 12. **gcp-metadata-flavor-check** - GCP Metadata-Flavor Header Matrix
+### 5. **gcp-metadata-flavor-check** - GCP Metadata-Flavor Header Matrix
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -364,7 +186,7 @@ nmap -p 80,8080,443 --script gcp-metadata-flavor-check --script-args 'gcp-metada
 
 ---
 
-### 13. **gcp-service-account-token** - GCP Service-Account Token Minting
+### 6. **gcp-service-account-token** - GCP Service-Account Token Minting
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -392,7 +214,7 @@ nmap -p 80,8080,443 --script gcp-service-account-token --script-args 'gcp-servic
 
 ---
 
-### 14. **kubernetes-pod-metadata-ssrf** - Kubernetes API via Fetch Proxy
+### 7. **kubernetes-pod-metadata-ssrf** - Kubernetes API via Fetch Proxy
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -420,34 +242,61 @@ nmap -p 80,8080,443 --script kubernetes-pod-metadata-ssrf --script-args 'kuberne
 
 ---
 
-### 15. **openstack-metadata-probe** - OpenStack Tenant Metadata
-**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+### 8. **alibaba-cloud-metadata-leak** - Alibaba ECS Metadata (100.100.100.200)
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
 
 **What it checks:**
-- GETs /openstack/latest/meta_data.json.
-- Parses uuid, project_id (masked), hostname, AZ and meta keys.
-- Grades the tenant-context disclosure.
-- Why it matters: OpenStack metadata exposes tenant project ids and instance uuids - the map needed to target the control plane or sibling workloads in a multi-tenant cloud. In private clouds this endpoint often ends up routed on shared management networks where every tenant can reach it.
-- Safety: one read-only GET; project identifiers are masked.
+- GETs the metadata index on the Alibaba endpoint.
+- Reads instance-id and lists RAM security-credentials roles.
+- Grades the exposure with role names as evidence.
+- Why it matters: Alibaba metadata mirrors the AWS pattern; an open service hands out instance identity and RAM role names whose credential documents are one additional request away. The dedicated 100.100.100.200 endpoint is often forgotten in firewall rules that only mention the AWS address.
+- Safety: three read-only GETs; no RAM credential documents are fetched and no values are rendered unmasked.
 
 **How to Execute:**
 ```bash
-nmap -p 80,8080,443 --script openstack-metadata-probe target.corp.example.com
+nmap -p 80,8080,443 --script alibaba-cloud-metadata-leak target.corp.example.com
 
 # Tuned request budget
-nmap -p 80,8080,443 --script openstack-metadata-probe --script-args 'openstack-metadata-probe.timeout=8,openstack-metadata-probe.maxrequests=48' target.corp.example.com
+nmap -p 80,8080,443 --script alibaba-cloud-metadata-leak --script-args 'alibaba-cloud-metadata-leak.timeout=8,alibaba-cloud-metadata-leak.maxrequests=48' target.corp.example.com
 ```
 
 **Sample Output:**
 ```
-| openstack-metadata-probe:
-|   Risk Level: 🟡 MEDIUM
-|   Status: VULNERABLE - OpenStack instance metadata readable without authentication
+| alibaba-cloud-metadata-leak:
+|   Risk Level: 🟠 HIGH
+|   Status: VULNERABLE - Alibaba ECS metadata readable without authentication
 ```
 
 ---
 
-### 16. **oracle-cloud-metadata-leak** - Oracle Cloud Instance Metadata
+### 9. **digitalocean-metadata-leak** - DigitalOcean Droplet Metadata
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- GETs /metadata/v1.json and parses droplet identity.
+- Cross-checks the plain /metadata/v1/hostname and /id endpoints.
+- Grades the disclosure.
+- Why it matters: Droplet id, region, hostname and enabled features are the targeting layer for control-plane and snapshot attacks. A reachable metadata endpoint also proves which SSRF primitive can pivot into cloud-specific data on this host.
+- Safety: three read-only GETs; no account tokens exist on this service and none are requested.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script digitalocean-metadata-leak target.corp.example.com
+
+# Tuned request budget
+nmap -p 80,8080,443 --script digitalocean-metadata-leak --script-args 'digitalocean-metadata-leak.timeout=8,digitalocean-metadata-leak.maxrequests=48' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| digitalocean-metadata-leak:
+|   Risk Level: 🟠 HIGH
+|   Status: VULNERABLE - DigitalOcean droplet metadata readable without authentication
+```
+
+---
+
+### 10. **oracle-cloud-metadata-leak** - Oracle Cloud Instance Metadata
 **Risk Level:** 🟠 HIGH | **Category:** vuln, safe
 
 **What it checks:**
@@ -474,3 +323,166 @@ nmap -p 80,8080,443 --script oracle-cloud-metadata-leak --script-args 'oracle-cl
 ```
 
 ---
+
+### 11. **cloud-init-log-exposure** - cloud-init Artifact Exposure
+**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+
+**What it checks:**
+- Probes the three common cloud-init artifact paths.
+- On content: profiles stages, datasource, instance id, token refs.
+- Grades the log exposure with masked evidence.
+- Why it matters: cloud-init logs record datasources, instance ids and sometimes the bootstrap tokens or curl lines used to fetch secrets. An exposed log turns a bland metadata service into a forensic gold mine and confirms the instance identity for follow-up attacks.
+- Safety: up to three read-only GETs; token-shaped strings are reported as counts and masked samples only.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script cloud-init-log-exposure target.corp.example.com
+
+# Tuned request budget
+nmap -p 80,8080,443 --script cloud-init-log-exposure --script-args 'cloud-init-log-exposure.timeout=8,cloud-init-log-exposure.maxrequests=48' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| cloud-init-log-exposure:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - cloud-init log exposes bootstrap identity material
+```
+
+---
+
+### 12. **cloud-metadata-ip-proxy-probe** - Proxy Fetch SSRF (Plain + Obfuscated IPs)
+**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
+
+**What it checks:**
+- Sends five /fetch?url= probes: index, instance-id, IAM roles, decimal-encoded and hex-encoded metadata URLs.
+- Classifies each answer: relayed content, marker seen, 4xx block.
+- Grades the proxy's SSRF posture.
+- Why it matters: Open URL-fetch features (webhooks, previewers, importers) are the classic SSRF doorway to 169.254.169.254 - the whole class of cloud credential theft starts here. Encoded IPs (decimal, hex, octal) bypass naive string filters, so the probe tests both plain and obfuscated forms.
+- Safety: read-only GETs through the target's own proxy; no schemes beyond http are attempted and no user data is fetched.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script cloud-metadata-ip-proxy-probe target.corp.example.com
+
+# Tuned request budget
+nmap -p 80,8080,443 --script cloud-metadata-ip-proxy-probe --script-args 'cloud-metadata-ip-proxy-probe.timeout=8,cloud-metadata-ip-proxy-probe.maxrequests=48' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| cloud-metadata-ip-proxy-probe:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - proxy fetch reaches metadata including obfuscated targets
+```
+
+---
+
+### 13. **cloud-ssrf-dns-rebinding-check** - DNS Rebinding Double-Lookup Probe
+**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
+
+**What it checks:**
+- Asks the target resolver for the same name twice.
+- Classifies the pair (stable public / rebound to metadata / rebound to private / inconsistent).
+- Probes the fetch path for echoed connection IPs.
+- Grades the TOCTOU exposure.
+- Why it matters: Rebinding defeats IP allowlists: the first lookup passes the check, the second (at connect time) flips to 169.254.169.254 and the fetch relays straight into metadata. The probe needs no attacker DNS - it simply asks the resolver twice and classifies the delta.
+- Safety: three read-only requests; the probe hostname is audit-owned and no external DNS infrastructure is contacted beyond the target's resolver path.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script cloud-ssrf-dns-rebinding-check target.corp.example.com
+
+# Tuned request budget
+nmap -p 80,8080,443 --script cloud-ssrf-dns-rebinding-check --script-args 'cloud-ssrf-dns-rebinding-check.timeout=8,cloud-ssrf-dns-rebinding-check.maxrequests=48' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| cloud-ssrf-dns-rebinding-check:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - resolver answers switch into the metadata range on repeat lookups
+```
+
+---
+
+### 14. **openstack-metadata-probe** - OpenStack Tenant Metadata
+**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+
+**What it checks:**
+- GETs /openstack/latest/meta_data.json.
+- Parses uuid, project_id (masked), hostname, AZ and meta keys.
+- Grades the tenant-context disclosure.
+- Why it matters: OpenStack metadata exposes tenant project ids and instance uuids - the map needed to target the control plane or sibling workloads in a multi-tenant cloud. In private clouds this endpoint often ends up routed on shared management networks where every tenant can reach it.
+- Safety: one read-only GET; project identifiers are masked.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script openstack-metadata-probe target.corp.example.com
+
+# Tuned request budget
+nmap -p 80,8080,443 --script openstack-metadata-probe --script-args 'openstack-metadata-probe.timeout=8,openstack-metadata-probe.maxrequests=48' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| openstack-metadata-probe:
+|   Risk Level: 🟡 MEDIUM
+|   Status: VULNERABLE - OpenStack instance metadata readable without authentication
+```
+
+---
+
+### 15. **cloud-imds-v2-token-enforced** - IMDSv2 Token Enforcement Verification
+**Risk Level:** 🟢 LOW | **Category:** defensive, safe
+
+**What it checks:**
+- PUTs /latest/api/token and parses the issued session token.
+- GETs metadata without the token (expect 401 when enforced).
+- GETs metadata with the token (expect 200) to confirm token flow.
+- Grades enforcement with actionable notes.
+- Why it matters: HttpTokens=optional is a false sense of security: attackers simply skip the token. Only the observed 401-without-token / 200-with-token matrix proves real enforcement. This is the positive-control probe defenders can schedule to catch enforcement drift after AMI or launch-template changes.
+- Safety: three read-only exchanges; the issued token is used once for verification and then discarded (masked in output).
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script cloud-imds-v2-token-enforced target.corp.example.com
+
+# Tuned request budget
+nmap -p 80,8080,443 --script cloud-imds-v2-token-enforced --script-args 'cloud-imds-v2-token-enforced.timeout=8,cloud-imds-v2-token-enforced.maxrequests=48' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| cloud-imds-v2-token-enforced:
+|   Risk Level: 🟢 LOW
+|   Status: VULNERABLE - token endpoint exists but token-less reads still succeed
+```
+
+---
+
+### 16. **cloud-instance-identity-doc** - AWS Identity Document Disclosure
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- GETs /latest/dynamic/instance-identity/document token-less.
+- Parses accountId, instanceId, region, AZ, type, image.
+- Reports the disclosure with INFO/MEDIUM grading.
+- Why it matters: The identity document confirms the exact account, region and instance type - everything an attacker needs to aim console, STS or billing attacks and to price the value of the role they hope to steal. It is also a reliable AWS fingerprint when endpoints are proxied.
+- Safety: one read-only GET; no signature verification or STS calls are performed.
+
+**How to Execute:**
+```bash
+nmap -p 80,8080,443 --script cloud-instance-identity-doc target.corp.example.com
+
+# Tuned request budget
+nmap -p 80,8080,443 --script cloud-instance-identity-doc --script-args 'cloud-instance-identity-doc.timeout=8,cloud-instance-identity-doc.maxrequests=48' target.corp.example.com
+```
+
+**Sample Output:**
+```
+| cloud-instance-identity-doc:
+|   Risk Level: 🟢 LOW
+|   Status: VULNERABLE - instance identity document readable without authentication
+```
+

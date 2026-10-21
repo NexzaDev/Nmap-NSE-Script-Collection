@@ -1,6 +1,20 @@
 # 📊 SNMP Security Audits
 
-**16 Nmap NSE scripts** for auditing SNMP v1/v2c/v3 agents: default and writable community detection, CISCO-CONFIG-COPY-MIB remote configuration exposure, SNMPv3 USM engine/level/user probing and weak MD5/SHA-1/DES protocol classification, user/account identity leakage, interface/route/ARP/process/software/storage/connection table dumps, device type fingerprinting, system identity leakage and UDP response amplification-factor measurement. Every script speaks real SNMP over UDP - BER-encoded GetRequest/GetNextRequest/GetBulkRequest/SetRequest PDUs for v1/v2c and RFC 3412/3414 USM messages (engine ID, security parameters, scoped PDU) for v3, with a built-in BER codec, OID table, and pure-Lua MD5/SHA-1/SHA-256/HMAC plus RFC 3414 key localization, DES-CBC and AES-128-CFB for privacy - and turns the observed MIB data into evidence-based findings. All probes are read-only except a single documented sysName write test that is immediately reverted; request budgets and timeouts bound every session.
+**16 Nmap NSE scripts** for auditing SNMP v1/v2c/v3 agents:
+
+**Covers:**
+
+- Default and writable community detection
+- CISCO-CONFIG-COPY-MIB remote configuration exposure
+- SNMPv3 USM engine/level/user probing and weak MD5/SHA-1/DES protocol classification
+- User/account identity leakage
+- Interface/route/ARP/process/software/storage/connection table dumps
+- Device type fingerprinting
+- System identity leakage and UDP response amplification-factor measurement
+
+Every script speaks real SNMP over UDP - BER-encoded GetRequest/GetNextRequest/GetBulkRequest/SetRequest PDUs for v1/v2c and RFC 3412/3414 USM messages (engine ID, security parameters, scoped PDU) for v3, with a built-in BER codec, OID table, and pure-Lua MD5/SHA-1/SHA-256/HMAC plus RFC 3414 key localization, DES-CBC and AES-128-CFB for privacy - and turns the observed MIB data into evidence-based findings.
+
+All probes are read-only except a single documented sysName write test that is immediately reverted; request budgets and timeouts bound every session.
 
 **Ports:** 161 or matched `snmp` service | **Protocol:** SNMP v1/v2c (RFC 1157/1901/3416) and SNMPv3/USM (RFC 3412/3414) over plain UDP | **Total lines of Lua:** 42,939
 
@@ -10,13 +24,13 @@
 
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [snmp-default-community](#1-snmp-default-community---default-community-detection) | 🔴 CRITICAL | vuln, safe | 2702 |
-| 2 | [snmp-cisco-config-copy](#2-snmp-cisco-config-copy---cisco-configuration-copy-exposure) | 🔴 CRITICAL | vuln, safe | 2654 |
+| 1 | [snmp-cisco-config-copy](#1-snmp-cisco-config-copy---cisco-configuration-copy-exposure) | 🔴 CRITICAL | vuln, safe | 2654 |
+| 2 | [snmp-default-community](#2-snmp-default-community---default-community-detection) | 🔴 CRITICAL | vuln, safe | 2702 |
 | 3 | [snmp-user-accounts-leak](#3-snmp-user-accounts-leak---account-identity-enumeration) | 🔴 CRITICAL | vuln, safe | 2730 |
 | 4 | [snmp-write-access-check](#4-snmp-write-access-check---unauthenticated-write-permissions) | 🔴 CRITICAL | vuln, safe | 2660 |
 | 5 | [snmp-ip-routing-table](#5-snmp-ip-routing-table---network-topology-disclosure) | 🟠 HIGH | discovery, safe | 2673 |
 | 6 | [snmp-running-processes](#6-snmp-running-processes---process-inventory-exposure) | 🟠 HIGH | discovery, safe | 2677 |
-| 7 | [snmp-snmpv3-weak-auth](#7-snmp-snmpv3-weak-auth---md5sha1des-usm-protocols) | 🟠 HIGH | vuln, safe | 2746 |
+| 7 | [snmp-snmpv3-weak-auth](#7-snmp-snmpv3-weak-auth---md5sha-1des-usm-protocols) | 🟠 HIGH | vuln, safe | 2746 |
 | 8 | [snmp-arp-table-leak](#8-snmp-arp-table-leak---live-host-mapping-disclosure) | 🟡 MEDIUM | discovery, safe | 2659 |
 | 9 | [snmp-installed-software](#9-snmp-installed-software---software-inventory-disclosure) | 🟡 MEDIUM | discovery, safe | 2679 |
 | 10 | [snmp-interfaces-dump](#10-snmp-interfaces-dump---interface-and-mac-inventory) | 🟡 MEDIUM | discovery, safe | 2698 |
@@ -29,43 +43,7 @@
 
 ---
 
-### 1. **snmp-default-community** - Default Community Detection
-**Description:** Probes the agent with the community strings vendors ship by default (public, private, community, cisco, admin, manager, test, root, default, mycommunity, snmp, monitor, internal, operator), records which respond, then tests every readable community for write permission with a single immediately-reverted sysName SetRequest.
-
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
-
-**What it checks:**
-- One GetRequest on sysName per candidate community (14 defaults)
-- One reverted SetRequest per readable community to classify read vs read/write
-- Per-community device identity (sysName) exposed by the hit
-- CVSS 9.8 for writable, 7.5 for read-only exposure
-
-**How to Execute:**
-```bash
-nmap -sU -p 161 --script snmp-default-community target.example.com
-
-# Larger candidate budget and shorter timeout
-nmap -sU -p 161 --script snmp-default-community --script-args 'snmp-default-community.maxrequests=40,snmp-default-community.timeout=4' target.example.com
-```
-
-**Sample Output:**
-```
-| snmp-default-community:
-|   Risk Level: 🔴 CRITICAL
-|   Status: VULNERABLE - writable default community exposed (unauthenticated write access)
-|   Severity counts: CRITICAL=1 HIGH=2 MEDIUM=0 LOW=0 INFO=0
-|   Findings:
-|     [CRITICAL] Default community 'private' grants write access
-|     [HIGH] Default community 'public' is readable
-|   Community Audit:
-|     Communities tested: 14
-|     Readable communities: public, private
-|     Write test detail: public: Set rejected (badValue) | private: Set accepted (status 0)
-```
-
----
-
-### 2. **snmp-cisco-config-copy** - Cisco Configuration Copy Exposure
+### 1. **snmp-cisco-config-copy** - Cisco Configuration Copy Exposure
 **Description:** Checks whether a Cisco (or Cisco-clone) device exposes the CISCO-CONFIG-COPY-MIB control objects, which let any community client request a full configuration copy to an attacker-chosen TFTP/FTP server. The script reads the control objects and registered server objects to measure exposure without ever triggering a copy.
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -97,6 +75,42 @@ nmap -sU -p 161 --script snmp-cisco-config-copy --script-args snmp-cisco-config-
 |     Reading community: public
 |     Control objects present: cccCopyInOpStatus = 1 | cccCopyInMode = 1
 |     Registered copy servers: sysObjectID (1.3.6.1.2.1.1.2.0)
+```
+
+---
+
+### 2. **snmp-default-community** - Default Community Detection
+**Description:** Probes the agent with the community strings vendors ship by default (public, private, community, cisco, admin, manager, test, root, default, mycommunity, snmp, monitor, internal, operator), records which respond, then tests every readable community for write permission with a single immediately-reverted sysName SetRequest.
+
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
+
+**What it checks:**
+- One GetRequest on sysName per candidate community (14 defaults)
+- One reverted SetRequest per readable community to classify read vs read/write
+- Per-community device identity (sysName) exposed by the hit
+- CVSS 9.8 for writable, 7.5 for read-only exposure
+
+**How to Execute:**
+```bash
+nmap -sU -p 161 --script snmp-default-community target.example.com
+
+# Larger candidate budget and shorter timeout
+nmap -sU -p 161 --script snmp-default-community --script-args 'snmp-default-community.maxrequests=40,snmp-default-community.timeout=4' target.example.com
+```
+
+**Sample Output:**
+```
+| snmp-default-community:
+|   Risk Level: 🔴 CRITICAL
+|   Status: VULNERABLE - writable default community exposed (unauthenticated write access)
+|   Severity counts: CRITICAL=1 HIGH=2 MEDIUM=0 LOW=0 INFO=0
+|   Findings:
+|     [CRITICAL] Default community 'private' grants write access
+|     [HIGH] Default community 'public' is readable
+|   Community Audit:
+|     Communities tested: 14
+|     Readable communities: public, private
+|     Write test detail: public: Set rejected (badValue) | private: Set accepted (status 0)
 ```
 
 ---
@@ -608,3 +622,4 @@ nmap -sU -p 161 --script snmp-storage-metrics --script-args snmp-storage-metrics
 |     2. other      ramdisk       512.0M / 1024.0M (50%)
 |     3. ram        /tmp          10.0M / 200.0M (5%)
 ```
+

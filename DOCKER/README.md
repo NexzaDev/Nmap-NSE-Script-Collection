@@ -1,6 +1,26 @@
 # 🐳 Docker Security Audits
 
-**16 Nmap NSE scripts** for auditing Docker hosts and registries: unauthenticated Engine API exposure (and what it implies for host root), privileged-container and capability/device escape preconditions, dangerous host volume mounts (Docker socket, `/`, `/etc`), socket-proxy method-filtering gaps (tecnativa/docker-socket-proxy, HAProxy, Nginx), secret leakage through container configuration (masked env/label scanning), missing cgroup resource limits, daemon hardening options, Go `/debug/pprof` exposure, live event-stream surveillance, host-network and wide port bindings, image build-history secret leakage, Registry v2 unauthenticated catalog/manifest reads, and unauthenticated manifest deletion - plus defensive CVE fingerprinting of the engine/containerd/runc triplet. Every script speaks the Docker Engine REST API or the Registry v2 protocol directly - real HTTP requests, real JSON parsing, real verdicts - and reports evidence-based findings. All findings mask secret material; no container is started, stopped, or deleted by the probe itself (deletion probing targets a nonexistent probe object).
+**16 Nmap NSE scripts** for auditing Docker hosts and registries:
+
+**Covers:**
+
+- Unauthenticated Engine API exposure (and what it implies for host root)
+- Privileged-container and capability/device escape preconditions
+- Dangerous host volume mounts (Docker socket, `/`, `/etc`)
+- Socket-proxy method-filtering gaps (tecnativa/docker-socket-proxy, HAProxy, Nginx)
+- Secret leakage through container configuration (masked env/label scanning)
+- Missing cgroup resource limits
+- Daemon hardening options
+- Go `/debug/pprof` exposure
+- Live event-stream surveillance
+- Host-network and wide port bindings
+- Image build-history secret leakage
+- Registry v2 unauthenticated catalog/manifest reads
+- Unauthenticated manifest deletion - plus defensive CVE fingerprinting of the engine/containerd/runc triplet
+
+Every script speaks the Docker Engine REST API or the Registry v2 protocol directly - real HTTP requests, real JSON parsing, real verdicts - and reports evidence-based findings.
+
+All findings mask secret material; no container is started, stopped, or deleted by the probe itself (deletion probing targets a nonexistent probe object).
 
 **Ports:** 2375/tcp (plain Docker Engine API), 2376/tcp (TLS Engine API), 5000/tcp (Registry v2) - any `docker`/`docker-registry` matched port | **Protocol:** Docker Engine REST API (v1.41) + Registry v2 (OCI distribution) | **Total lines of Lua:** 26,277
 
@@ -10,11 +30,11 @@
 
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [docker-unauthenticated-api](#1-docker-unauthenticated-api---unauthenticated-engine-api-detection) | 🔴 CRITICAL | vuln, auth, safe | 1691 |
+| 1 | [docker-container-inspect-secrets](#1-docker-container-inspect-secrets---secrets-in-container-configuration) | 🔴 CRITICAL | vuln, discovery, safe | 1653 |
 | 2 | [docker-privileged-containers](#2-docker-privileged-containers---privilegedcontainer-escape-preconditions) | 🔴 CRITICAL | vuln, safe | 1648 |
-| 3 | [docker-volume-host-mounts](#3-docker-volume-host-mounts---dangerous-host-volume-mounts) | 🔴 CRITICAL | vuln, discovery, safe | 1635 |
-| 4 | [docker-socket-proxy-misconfig](#4-docker-socket-proxy-misconfig---socket-proxy-method-filtering) | 🔴 CRITICAL | vuln, safe | 1587 |
-| 5 | [docker-container-inspect-secrets](#5-docker-container-inspect-secrets---secrets-in-container-configuration) | 🔴 CRITICAL | vuln, discovery, safe | 1653 |
+| 3 | [docker-socket-proxy-misconfig](#3-docker-socket-proxy-misconfig---socket-proxy-method-filtering) | 🔴 CRITICAL | vuln, safe | 1587 |
+| 4 | [docker-unauthenticated-api](#4-docker-unauthenticated-api---unauthenticated-engine-api-detection) | 🔴 CRITICAL | vuln, auth, safe | 1691 |
+| 5 | [docker-volume-host-mounts](#5-docker-volume-host-mounts---dangerous-host-volume-mounts) | 🔴 CRITICAL | vuln, discovery, safe | 1635 |
 | 6 | [docker-debug-pprof-exposure](#6-docker-debug-pprof-exposure---go-pprof-debug-endpoints) | 🟠 HIGH | vuln, discovery, safe | 1627 |
 | 7 | [docker-registry-delete-allowed](#7-docker-registry-delete-allowed---unauthenticated-manifest-deletion) | 🟠 HIGH | vuln, safe | 1615 |
 | 8 | [docker-build-cache-leak](#8-docker-build-cache-leak---secrets-in-image-build-history) | 🟡 MEDIUM | vuln, discovery, safe | 1642 |
@@ -29,43 +49,40 @@
 
 ---
 
-### 1. **docker-unauthenticated-api** - Unauthenticated Engine API Detection
-**Description:** Detects unauthenticated access to the Docker Engine REST API (the classic exposed 2375/2376 port) and maps exactly what the anonymous endpoint allows: engine version, daemon info, container inventory, and - critically - the write surface that implies host root code execution.
+### 1. **docker-container-inspect-secrets** - Secrets in Container Configuration
+**Description:** Queries all active and stopped containers and scans their configuration metadata (Env, Labels, Cmd) with a rule set covering AWS keys, GitHub/Slack/Stripe tokens, generic passwords, connection strings, private keys, and JWTs. Every hit is masked in the report.
 
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, auth, safe
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, discovery, safe
 
 **What it checks:**
-- API version negotiation (GET /version) and daemon reachability (GET /info) with and without credentials
-- unauthenticated read surface: container list, image list, network list
-- write-surface implication mapping: POST /containers/create reachable with the same (absent) auth = host root
-- swarm state, security options, storage driver and docker root directory disclosure
-- TLS-terminated variants (2376) and 401/403 classification of a correctly gated daemon
+- /containers/json?all=1 inventory + per-container /containers/{id}/json
+- env/label pair scanning against 20+ secret rules (aws-access-key-id, aws-secret-key, github-token, slack-token, db-password, connection-string, private-key-block, bearer-jwt, generic-secret, ...)
+- value-shape validation (AKIA prefix, ghp_/xox/sk_live patterns, scheme://user:pass@)
+- masking of all reported secret material (first 4 + last 4 chars, length)
+- fleet-level summary: containers inspected, values found, worst severity
 
 **How to Execute:**
 ```bash
 # Basic scan
-nmap -p 2375 --script docker-unauthenticated-api target.example.com
+nmap -p 2375 --script docker-container-inspect-secrets target.example.com
 
-# Custom request budget and timeout
-nmap -p 2375 --script docker-unauthenticated-api --script-args 'docker-unauthenticated-api.maxrequests=10 docker-unauthenticated-api.timeout=15' target.example.com
+# Bound the scan
+nmap -p 2375 --script docker-container-inspect-secrets --script-args 'docker-container-inspect-secrets.max_containers=100 docker-container-inspect-secrets.timeout=15' target.example.com
 ```
 
 **Sample Output:**
 ```
-| docker-unauthenticated-api:
+| docker-container-inspect-secrets:
 |   Risk Level: 🔴 CRITICAL
-|   Status: VULNERABLE - Unauthenticated Docker Daemon API Exposed
-|   Severity counts: CRITICAL=2 HIGH=1 MEDIUM=0 LOW=0 INFO=1
-|   Weighted score: 30
-|   Daemon Details:
-|     Docker Engine Version: 20.10.7
-|     API Version: 1.41
-|     Operating System: Ubuntu 20.04.6 LTS
-|   Findings:
-|     [CRITICAL] Docker Engine API is fully accessible without credentials (/info)
-|     [CRITICAL] Unauthenticated container creation would allow host root code execution
-|     [HIGH] Docker Swarm is active on this daemon and its topology is readable unauthenticated
-|   Requests issued: 5
+|   Status: VULNERABLE - 5 plaintext secret(s) exposed in container configuration
+|   Severity counts: CRITICAL=4 HIGH=2 MEDIUM=0 LOW=0 INFO=0
+|   Weighted score: 54
+|   Exposed Secrets (masked):
+|     internal-builder | AWS_ACCESS_KEY_ID   | AKIA****MPLE (len=20) | aws-access-key-id | CRITICAL
+|     internal-builder | AWS_SECRET_ACCESS_KEY | wJal****EKEY (len=40) | aws-secret-key  | CRITICAL
+|     internal-builder | GITHUB_TOKEN        | ghp_****9876 (len=40) | github-token    | CRITICAL
+|     internal-builder | DB_PASSWORD         | Pr0d****2024 (len=18) | db-password     | HIGH
+|   Requests issued: 7
 ```
 
 ---
@@ -109,47 +126,7 @@ nmap -p 2375 --script docker-privileged-containers --script-args 'docker-privile
 
 ---
 
-### 3. **docker-volume-host-mounts** - Dangerous Host Volume Mounts
-**Description:** Inspects storage mounts and host filesystem binds across all containers and flags the exposures that give a workload access to the host: the Docker daemon socket, the root filesystem, /etc, /var, home directories, and other sensitive paths - with read/write mode and severity per mount.
-
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, discovery, safe
-
-**What it checks:**
-- /var/run/docker.sock or /run/docker.sock binds (rw = instant daemon control, ro = information)
-- / or / host-root binds (ro = full host read; rw = full host write)
-- /etc, /var, /home, /root, /boot, /lib, /usr, /sys, /proc binds with path-classification
-- named-volume vs bind classification and RW/Mode parsing
-- fleet-level summary: critical (socket/root) count vs sensitive count
-
-**How to Execute:**
-```bash
-# Basic scan
-nmap -p 2375 --script docker-volume-host-mounts target.example.com
-
-# Inspect more containers per run
-nmap -p 2375 --script docker-volume-host-mounts --script-args 'docker-volume-host-mounts.max_containers=50' target.example.com
-```
-
-**Sample Output:**
-```
-| docker-volume-host-mounts:
-|   Risk Level: 🔴 CRITICAL
-|   Status: VULNERABLE - 2 critical host mount(s) (Docker socket or host root)
-|   Severity counts: CRITICAL=3 HIGH=1 MEDIUM=0 LOW=0 INFO=0
-|   Sensitive Mounts:
-|     container        | host-source         | container-dest | mode | severity
-|     internal-builder | /var/run/docker.sock| /var/run/docker.sock | rw | CRITICAL
-|     legacy-cache     | /                   | /host-root     | ro | CRITICAL
-|     legacy-cache     | /etc                | /host-etc      | rw | HIGH
-|   Fleet Summary:
-|     Critical (socket/root) mounts: 2
-|     Sensitive mount findings: 3
-|   Requests issued: 7
-```
-
----
-
-### 4. **docker-socket-proxy-misconfig** - Socket Proxy Method Filtering
+### 3. **docker-socket-proxy-misconfig** - Socket Proxy Method Filtering
 **Description:** Tests Docker socket security proxies (tecnativa/docker-socket-proxy, HAProxy, Nginx Docker reverse proxies) for method-filtering misconfiguration: the proxy is supposed to allow only GET, and any accepted POST/PUT/DELETE/PATCH re-opens host root through the API surface.
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -190,39 +167,82 @@ nmap -p 2375 --script docker-socket-proxy-misconfig --script-args 'docker-socket
 
 ---
 
-### 5. **docker-container-inspect-secrets** - Secrets in Container Configuration
-**Description:** Queries all active and stopped containers and scans their configuration metadata (Env, Labels, Cmd) with a rule set covering AWS keys, GitHub/Slack/Stripe tokens, generic passwords, connection strings, private keys, and JWTs. Every hit is masked in the report.
+### 4. **docker-unauthenticated-api** - Unauthenticated Engine API Detection
+**Description:** Detects unauthenticated access to the Docker Engine REST API (the classic exposed 2375/2376 port) and maps exactly what the anonymous endpoint allows: engine version, daemon info, container inventory, and - critically - the write surface that implies host root code execution.
 
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, discovery, safe
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, auth, safe
 
 **What it checks:**
-- /containers/json?all=1 inventory + per-container /containers/{id}/json
-- env/label pair scanning against 20+ secret rules (aws-access-key-id, aws-secret-key, github-token, slack-token, db-password, connection-string, private-key-block, bearer-jwt, generic-secret, ...)
-- value-shape validation (AKIA prefix, ghp_/xox/sk_live patterns, scheme://user:pass@)
-- masking of all reported secret material (first 4 + last 4 chars, length)
-- fleet-level summary: containers inspected, values found, worst severity
+- API version negotiation (GET /version) and daemon reachability (GET /info) with and without credentials
+- unauthenticated read surface: container list, image list, network list
+- write-surface implication mapping: POST /containers/create reachable with the same (absent) auth = host root
+- swarm state, security options, storage driver and docker root directory disclosure
+- TLS-terminated variants (2376) and 401/403 classification of a correctly gated daemon
 
 **How to Execute:**
 ```bash
 # Basic scan
-nmap -p 2375 --script docker-container-inspect-secrets target.example.com
+nmap -p 2375 --script docker-unauthenticated-api target.example.com
 
-# Bound the scan
-nmap -p 2375 --script docker-container-inspect-secrets --script-args 'docker-container-inspect-secrets.max_containers=100 docker-container-inspect-secrets.timeout=15' target.example.com
+# Custom request budget and timeout
+nmap -p 2375 --script docker-unauthenticated-api --script-args 'docker-unauthenticated-api.maxrequests=10 docker-unauthenticated-api.timeout=15' target.example.com
 ```
 
 **Sample Output:**
 ```
-| docker-container-inspect-secrets:
+| docker-unauthenticated-api:
 |   Risk Level: 🔴 CRITICAL
-|   Status: VULNERABLE - 5 plaintext secret(s) exposed in container configuration
-|   Severity counts: CRITICAL=4 HIGH=2 MEDIUM=0 LOW=0 INFO=0
-|   Weighted score: 54
-|   Exposed Secrets (masked):
-|     internal-builder | AWS_ACCESS_KEY_ID   | AKIA****MPLE (len=20) | aws-access-key-id | CRITICAL
-|     internal-builder | AWS_SECRET_ACCESS_KEY | wJal****EKEY (len=40) | aws-secret-key  | CRITICAL
-|     internal-builder | GITHUB_TOKEN        | ghp_****9876 (len=40) | github-token    | CRITICAL
-|     internal-builder | DB_PASSWORD         | Pr0d****2024 (len=18) | db-password     | HIGH
+|   Status: VULNERABLE - Unauthenticated Docker Daemon API Exposed
+|   Severity counts: CRITICAL=2 HIGH=1 MEDIUM=0 LOW=0 INFO=1
+|   Weighted score: 30
+|   Daemon Details:
+|     Docker Engine Version: 20.10.7
+|     API Version: 1.41
+|     Operating System: Ubuntu 20.04.6 LTS
+|   Findings:
+|     [CRITICAL] Docker Engine API is fully accessible without credentials (/info)
+|     [CRITICAL] Unauthenticated container creation would allow host root code execution
+|     [HIGH] Docker Swarm is active on this daemon and its topology is readable unauthenticated
+|   Requests issued: 5
+```
+
+---
+
+### 5. **docker-volume-host-mounts** - Dangerous Host Volume Mounts
+**Description:** Inspects storage mounts and host filesystem binds across all containers and flags the exposures that give a workload access to the host: the Docker daemon socket, the root filesystem, /etc, /var, home directories, and other sensitive paths - with read/write mode and severity per mount.
+
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, discovery, safe
+
+**What it checks:**
+- /var/run/docker.sock or /run/docker.sock binds (rw = instant daemon control, ro = information)
+- / or / host-root binds (ro = full host read; rw = full host write)
+- /etc, /var, /home, /root, /boot, /lib, /usr, /sys, /proc binds with path-classification
+- named-volume vs bind classification and RW/Mode parsing
+- fleet-level summary: critical (socket/root) count vs sensitive count
+
+**How to Execute:**
+```bash
+# Basic scan
+nmap -p 2375 --script docker-volume-host-mounts target.example.com
+
+# Inspect more containers per run
+nmap -p 2375 --script docker-volume-host-mounts --script-args 'docker-volume-host-mounts.max_containers=50' target.example.com
+```
+
+**Sample Output:**
+```
+| docker-volume-host-mounts:
+|   Risk Level: 🔴 CRITICAL
+|   Status: VULNERABLE - 2 critical host mount(s) (Docker socket or host root)
+|   Severity counts: CRITICAL=3 HIGH=1 MEDIUM=0 LOW=0 INFO=0
+|   Sensitive Mounts:
+|     container        | host-source         | container-dest | mode | severity
+|     internal-builder | /var/run/docker.sock| /var/run/docker.sock | rw | CRITICAL
+|     legacy-cache     | /                   | /host-root     | ro | CRITICAL
+|     legacy-cache     | /etc                | /host-etc      | rw | HIGH
+|   Fleet Summary:
+|     Critical (socket/root) mounts: 2
+|     Sensitive mount findings: 3
 |   Requests issued: 7
 ```
 
@@ -653,8 +673,6 @@ nmap -p 2375 --script docker-version-cve-fingerprint --script-args 'docker-versi
 |     engine: 20.10.7 | containerd: 1.5.13 | runc: 1.0.1
 |   Requests issued: 3
 ```
-
----
 
 ## 🔒 Safe & Non-Destructive
 

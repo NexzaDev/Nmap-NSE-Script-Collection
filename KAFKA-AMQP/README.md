@@ -1,37 +1,56 @@
 # 📨 Kafka & RabbitMQ Security Audits
 
-**16 Nmap NSE scripts** for auditing Apache Kafka brokers and RabbitMQ message buses directly on the wire: a full Kafka binary-protocol client (size-prefixed request framing with correlation ids, ApiVersions version-floor inference, wildcard/named Metadata with per-partition leader and ISR decoding, ListGroups/DescribeGroups member extraction, CreateTopics/DeleteTopics sentinel semantics, SaslHandshake mechanism enumeration) with 40+ Kafka error-code names and version-to-advisory era mapping; a complete AMQP 0-9-1 codec (protocol preamble, connection.start/start-ok with field-table encode/decode, tune/tune-ok, open/open-ok, close/close-ok, channel.open, passive queue.declare, SASL PLAIN) with close-code interpretation; a RabbitMQ management HTTP/JSON layer (overview, definitions, queues with chunked-transfer decoding); and a TLS greeting grader for the AMQPS listener. The suite covers the messaging attack surface: unauthenticated broker APIs, anonymous topic and consumer-group enumeration, sentinel create/delete authorization probes, SASL posture (PLAIN over cleartext, SCRAM grading), default-credential and anonymous logins, management API authentication, definitions export exposure, queue/message inventory with dead-queue analysis and TLS/auth enforcement on 5671. Every probe is bounded and non-destructive: read-only frames or single well-known/default credential attempts, uniquely-named sentinel topics that are deleted and verified gone, passive declares on sentinel queues that cannot exist, no brute force, no message consumption or production.
+**16 Nmap NSE scripts** for auditing Apache Kafka brokers and RabbitMQ message buses directly on the wire:
+
+**Covers:**
+
+- A full Kafka binary-protocol client (size-prefixed request framing with correlation ids, ApiVersions version-floor inference, wildcard/named Metadata with per-partition leader and ISR decoding, ListGroups/DescribeGroups member extraction, CreateTopics/DeleteTopics sentinel semantics, SaslHandshake mechanism enumeration) with 40+ Kafka error-code names and version-to-advisory era mapping; a complete AMQP 0-9-1 codec (protocol preamble, connection.start/start-ok with field-table encode/decode, tune/tune-ok, open/open-ok, close/close-ok, channel.open, passive queue.declare, SASL PLAIN) with close-code interpretation; a RabbitMQ management HTTP/JSON layer (overview, definitions, queues with chunked-transfer decoding); and a TLS greeting grader for the AMQPS listener
+
+**The suite covers the messaging attack surface:**
+
+- Unauthenticated broker APIs
+- Anonymous topic and consumer-group enumeration
+- Sentinel create/delete authorization probes
+- SASL posture (PLAIN over cleartext, SCRAM grading)
+- Default-credential and anonymous logins
+- Management API authentication
+- Definitions export exposure
+- Queue/message inventory with dead-queue analysis and TLS/auth enforcement on 5671
+
+**Every probe is bounded and non-destructive:**
+
+- Read-only frames or single well-known/default credential attempts
+- Uniquely-named sentinel topics that are deleted and verified gone
+- Passive declares on sentinel queues that cannot exist
+- No brute force
+- No message consumption or production.
 
 **Ports:** 9092/tcp (kafka) + 5672/tcp (amqp) + 5671/tcp (amqps) + 15672/tcp (http) | **Protocols:** Kafka binary protocol, AMQP 0-9-1, RabbitMQ management HTTP/JSON, TLS | **Total lines of Lua:** 33,051
 
-
 ---
-
 
 ## 📋 Script Index
 
-
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [kafka-anonymous-consumer-group](#1-kafka-anonymous-consumer-group-anonymous-consumer-group-enumeration) | 🔴 CRITICAL | vuln, safe | 2093 |
-| 2 | [kafka-broker-fingerprint](#2-kafka-broker-fingerprint-broker-version-fingerprint-apiversions-floor) | 🟢 LOW | discovery, safe | 2054 |
-| 3 | [kafka-controller-epoch-leak](#3-kafka-controller-epoch-leak-cluster-topology-controller-disclosure) | 🟢 LOW | discovery, safe | 2064 |
-| 4 | [kafka-create-topic-allowed](#4-kafka-create-topic-allowed-anonymous-createtopics-sentinel-probe) | 🟠 HIGH | vuln, safe | 2067 |
-| 5 | [kafka-delete-topic-allowed](#5-kafka-delete-topic-allowed-anonymous-deletetopics-sentinel-probe) | 🟠 HIGH | vuln, safe | 2070 |
-| 6 | [kafka-metadata-topic-leak](#6-kafka-metadata-topic-leak-topic-inventory-partition-topology-leak) | 🔴 CRITICAL | vuln, safe | 2081 |
-| 7 | [kafka-plain-auth-over-cleartext](#7-kafka-plain-auth-over-cleartext-sasl-plain-over-cleartext-listener) | 🟡 MEDIUM | defensive, safe | 2053 |
-| 8 | [kafka-sasl-mechanism-audit](#8-kafka-sasl-mechanism-audit-sasl-mechanism-enumeration-grading) | 🟡 MEDIUM | discovery, safe | 2048 |
-| 9 | [kafka-unauth-broker-access](#9-kafka-unauth-broker-access-unauthenticated-broker-api-access) | 🔴 CRITICAL | vuln, safe | 2069 |
-| 10 | [rabbitmq-amqp-anonymous-login](#10-rabbitmq-amqp-anonymous-login-default-credential-login-capability-probe) | 🔴 CRITICAL | vuln, safe | 2059 |
-| 11 | [rabbitmq-amqp-protocol-handshake](#11-rabbitmq-amqp-protocol-handshake-amqp-0-9-1-handshake-fingerprint) | 🟢 LOW | discovery, safe | 2071 |
-| 12 | [rabbitmq-default-credentials](#12-rabbitmq-default-credentials-guestguest-default-credential-check) | 🔴 CRITICAL | vuln, safe | 2045 |
-| 13 | [rabbitmq-definitions-export-leak](#13-rabbitmq-definitions-export-leak-definitions-export-usersvhostspolicies) | 🔴 CRITICAL | vuln, safe | 2066 |
-| 14 | [rabbitmq-management-unauth](#14-rabbitmq-management-unauth-management-api-authentication-posture) | 🔴 CRITICAL | vuln, safe | 2055 |
-| 15 | [rabbitmq-queue-messages-dump](#15-rabbitmq-queue-messages-dump-queue-inventory-backlog-analysis) | 🟠 HIGH | vuln, safe | 2074 |
-| 16 | [rabbitmq-tls-auth-enforced](#16-rabbitmq-tls-auth-enforced-tls-enforcement-auth-posture-on-5671) | 🟠 HIGH | defensive, safe | 2082 |
+| 1 | [kafka-anonymous-consumer-group](#1-kafka-anonymous-consumer-group---anonymous-consumer-group-enumeration) | 🔴 CRITICAL | vuln, safe | 2093 |
+| 2 | [kafka-metadata-topic-leak](#2-kafka-metadata-topic-leak---topic-inventory--partition-topology-leak) | 🔴 CRITICAL | vuln, safe | 2081 |
+| 3 | [kafka-unauth-broker-access](#3-kafka-unauth-broker-access---unauthenticated-broker-api-access) | 🔴 CRITICAL | vuln, safe | 2069 |
+| 4 | [rabbitmq-amqp-anonymous-login](#4-rabbitmq-amqp-anonymous-login---default-credential-login--capability-probe) | 🔴 CRITICAL | vuln, safe | 2059 |
+| 5 | [rabbitmq-default-credentials](#5-rabbitmq-default-credentials---guestguest-default-credential-check) | 🔴 CRITICAL | vuln, safe | 2045 |
+| 6 | [rabbitmq-definitions-export-leak](#6-rabbitmq-definitions-export-leak---definitions-export-usersvhostspolicies) | 🔴 CRITICAL | vuln, safe | 2066 |
+| 7 | [rabbitmq-management-unauth](#7-rabbitmq-management-unauth---management-api-authentication-posture) | 🔴 CRITICAL | vuln, safe | 2055 |
+| 8 | [kafka-create-topic-allowed](#8-kafka-create-topic-allowed---anonymous-createtopics-sentinel-probe) | 🟠 HIGH | vuln, safe | 2067 |
+| 9 | [kafka-delete-topic-allowed](#9-kafka-delete-topic-allowed---anonymous-deletetopics-sentinel-probe) | 🟠 HIGH | vuln, safe | 2070 |
+| 10 | [rabbitmq-queue-messages-dump](#10-rabbitmq-queue-messages-dump---queue-inventory--backlog-analysis) | 🟠 HIGH | vuln, safe | 2074 |
+| 11 | [rabbitmq-tls-auth-enforced](#11-rabbitmq-tls-auth-enforced---tls-enforcement--auth-posture-on-5671) | 🟠 HIGH | defensive, safe | 2082 |
+| 12 | [kafka-plain-auth-over-cleartext](#12-kafka-plain-auth-over-cleartext---sasl-plain-over-cleartext-listener) | 🟡 MEDIUM | defensive, safe | 2053 |
+| 13 | [kafka-sasl-mechanism-audit](#13-kafka-sasl-mechanism-audit---sasl-mechanism-enumeration--grading) | 🟡 MEDIUM | discovery, safe | 2048 |
+| 14 | [kafka-broker-fingerprint](#14-kafka-broker-fingerprint---broker-version-fingerprint-apiversions-floor) | 🟢 LOW | discovery, safe | 2054 |
+| 15 | [kafka-controller-epoch-leak](#15-kafka-controller-epoch-leak---cluster-topology--controller-disclosure) | 🟢 LOW | discovery, safe | 2064 |
+| 16 | [rabbitmq-amqp-protocol-handshake](#16-rabbitmq-amqp-protocol-handshake---amqp-0-9-1-handshake-fingerprint) | 🟢 LOW | discovery, safe | 2071 |
 
 ---
-
 
 ### 1. **kafka-anonymous-consumer-group** - Anonymous Consumer-Group Enumeration
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -61,119 +80,7 @@ nmap -p 9092 --script kafka-anonymous-consumer-group --script-args 'kafka-anonym
 
 ---
 
-### 2. **kafka-broker-fingerprint** - Broker Version Fingerprint (ApiVersions Floor)
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Sends ApiVersions (key 18) and records every API key range.
-- Infers the version floor from first-introduced API keys.
-- Sends wildcard Metadata to enumerate brokers and the controller.
-- Maps the floor to era advisories.
-- Why it matters: Kafka does not expose a version string pre-auth; the ApiVersions table is the only fingerprint, and each API key's first appearance pins the release line. Era advisories (JAAS/JNDI injection patterns, missing hostname verification fixes) turn the fingerprint into an upgrade priority.
-- Safety: two read-only frames.
-
-**How to Execute:**
-```bash
-nmap -p 9092 --script kafka-broker-fingerprint broker01.corp.example.com
-
-# Tuned request budget
-nmap -p 9092 --script kafka-broker-fingerprint --script-args 'kafka-broker-fingerprint.timeout=8,kafka-broker-fingerprint.maxrequests=48' broker01.corp.example.com
-```
-
-**Sample Output:**
-```
-| kafka-broker-fingerprint:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - fingerprint collected; era advisories matched
-```
-
----
-
-### 3. **kafka-controller-epoch-leak** - Cluster Topology & Controller Disclosure
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Sends wildcard Metadata (key 3) anonymously.
-- Resolves the controller node id to a broker endpoint.
-- Builds the leader distribution across observed partitions.
-- Reports topology with an INFO-grade finding.
-- Why it matters: The controller broker is the brain of the cluster; knowing its id and address focuses targeted disruption (controlled shutdown abuse, metadata flooding). Leader distribution is an operational health signal defenders can compare against rebalance expectations.
-- Safety: a single metadata read; no leadership changes, no reassignments, no produce or consume traffic.
-
-**How to Execute:**
-```bash
-nmap -p 9092 --script kafka-controller-epoch-leak broker01.corp.example.com
-
-# Tuned request budget
-nmap -p 9092 --script kafka-controller-epoch-leak --script-args 'kafka-controller-epoch-leak.timeout=8,kafka-controller-epoch-leak.maxrequests=48' broker01.corp.example.com
-```
-
-**Sample Output:**
-```
-| kafka-controller-epoch-leak:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - cluster topology collected
-```
-
----
-
-### 4. **kafka-create-topic-allowed** - Anonymous CreateTopics Sentinel Probe
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- Sends CreateTopics (key 19) for the sentinel: 1 partition, RF 1.
-- Decodes the topic error code (NO_ERROR vs CLUSTER_AUTHORIZATION_FAILED).
-- On success deletes the sentinel and verifies removal via Metadata.
-- Grades the create path.
-- Why it matters: Topic creation is a control-plane write: an open create path lets an attacker shadow real topics, exhaust disk via partition floods and confuse downstream consumers with look-alike names. The probe distinguishes authorization failures from policy failures so defenders know exactly which layer blocked the request.
-- Safety: one create of a uniquely-named 1-partition, RF-1 topic that is deleted immediately and its absence verified.
-
-**How to Execute:**
-```bash
-nmap -p 9092 --script kafka-create-topic-allowed broker01.corp.example.com
-
-# Tuned request budget
-nmap -p 9092 --script kafka-create-topic-allowed --script-args 'kafka-create-topic-allowed.timeout=8,kafka-create-topic-allowed.maxrequests=48' broker01.corp.example.com
-```
-
-**Sample Output:**
-```
-| kafka-create-topic-allowed:
-|   Risk Level: 🟠 HIGH
-|   Status: VULNERABLE - anonymous clients may create topics
-```
-
----
-
-### 5. **kafka-delete-topic-allowed** - Anonymous DeleteTopics Sentinel Probe
-**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
-
-**What it checks:**
-- Verifies via Metadata that the sentinel topic does not exist.
-- Sends DeleteTopics (key 20) for the sentinel.
-- Decodes the error code to distinguish authorization from policy.
-- Grades the delete path.
-- Why it matters: An authorized delete path means one unauthenticated request can erase production data pipelines: the deletion of a real topic is irreversible and cascades to downstream consumers. UNKNOWN_TOPIC_OR_PARTITION for a nonexistent sentinel is definitive proof that authorization passed and only the name was missing.
-- Safety: nothing that exists is ever deleted - the sentinel is checked absent beforehand and the probe deletes only that name.
-
-**How to Execute:**
-```bash
-nmap -p 9092 --script kafka-delete-topic-allowed broker01.corp.example.com
-
-# Tuned request budget
-nmap -p 9092 --script kafka-delete-topic-allowed --script-args 'kafka-delete-topic-allowed.timeout=8,kafka-delete-topic-allowed.maxrequests=48' broker01.corp.example.com
-```
-
-**Sample Output:**
-```
-| kafka-delete-topic-allowed:
-|   Risk Level: 🟠 HIGH
-|   Status: VULNERABLE - delete path authorized for anonymous clients
-```
-
----
-
-### 6. **kafka-metadata-topic-leak** - Topic Inventory & Partition Topology Leak
+### 2. **kafka-metadata-topic-leak** - Topic Inventory & Partition Topology Leak
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -201,63 +108,7 @@ nmap -p 9092 --script kafka-metadata-topic-leak --script-args 'kafka-metadata-to
 
 ---
 
-### 7. **kafka-plain-auth-over-cleartext** - SASL PLAIN over Cleartext Listener
-**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
-
-**What it checks:**
-- Handshakes SaslHandshake on the connected listener.
-- Checks whether PLAIN is in the mechanism list.
-- Classifies the transport (plaintext vs TLS listener) from the port.
-- Grades the credential-exposure combination.
-- Why it matters: PLAIN over PLAINTEXT hands every on-path observer the exact bytes of a working credential pair. Defenders need per-listener visibility: a broker can enforce TLS on 9093 while still exposing a wide-open legacy 9092.
-- Safety: one handshake frame; no authentication is attempted and no credential material is ever transmitted.
-
-**How to Execute:**
-```bash
-nmap -p 9092 --script kafka-plain-auth-over-cleartext broker01.corp.example.com
-
-# Tuned request budget
-nmap -p 9092 --script kafka-plain-auth-over-cleartext --script-args 'kafka-plain-auth-over-cleartext.timeout=8,kafka-plain-auth-over-cleartext.maxrequests=48' broker01.corp.example.com
-```
-
-**Sample Output:**
-```
-| kafka-plain-auth-over-cleartext:
-|   Risk Level: 🟡 MEDIUM
-|   Status: SECURE - no cleartext-credential mechanism detected on this listener
-```
-
----
-
-### 8. **kafka-sasl-mechanism-audit** - SASL Mechanism Enumeration & Grading
-**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
-
-**What it checks:**
-- Sends SaslHandshake (key 17) with the PLAIN probe mechanism.
-- Decodes the advertised mechanism list or the error state.
-- Grades mechanisms (SCRAM-SHA-512 ... PLAIN) with a strength class.
-- Reports the posture without ever sending credentials.
-- Why it matters: The mechanism list tells you whether credentials can cross the wire in the clear (PLAIN without TLS) and whether the broker supports modern SCRAM variants. ILLEGAL_SASL_STATE proves the listener has no SASL at all - the root finding for every downstream Kafka attack.
-- Safety: exactly one handshake frame; no SaslAuthenticate, no credential material, no brute force.
-
-**How to Execute:**
-```bash
-nmap -p 9092 --script kafka-sasl-mechanism-audit broker01.corp.example.com
-
-# Tuned request budget
-nmap -p 9092 --script kafka-sasl-mechanism-audit --script-args 'kafka-sasl-mechanism-audit.timeout=8,kafka-sasl-mechanism-audit.maxrequests=48' broker01.corp.example.com
-```
-
-**Sample Output:**
-```
-| kafka-sasl-mechanism-audit:
-|   Risk Level: 🟡 MEDIUM
-|   Status: INFORMATIONAL - SASL is not enabled on this listener
-```
-
----
-
-### 9. **kafka-unauth-broker-access** - Unauthenticated Broker API Access
+### 3. **kafka-unauth-broker-access** - Unauthenticated Broker API Access
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -285,7 +136,7 @@ nmap -p 9092 --script kafka-unauth-broker-access --script-args 'kafka-unauth-bro
 
 ---
 
-### 10. **rabbitmq-amqp-anonymous-login** - Default-Credential Login & Capability Probe
+### 4. **rabbitmq-amqp-anonymous-login** - Default-Credential Login & Capability Probe
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -313,35 +164,7 @@ nmap -p 5672 --script rabbitmq-amqp-anonymous-login --script-args 'rabbitmq-amqp
 
 ---
 
-### 11. **rabbitmq-amqp-protocol-handshake** - AMQP 0-9-1 Handshake Fingerprint
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Sends the AMQP protocol header (AMQP\0\0\x09\x01).
-- Decodes connection.start: version, product, mechanisms, locales.
-- Maps the broker version to advisories.
-- Closes politely with connection.close and checks close-ok.
-- Why it matters: connection.start discloses product, version, platform and the SASL mechanism list before any credential is sent - everything needed to pick the right attack or the right upgrade path. Version-to-advisory mapping flags managers still exposed with CVE-carrying release lines (management XSS, frame DoS lineages).
-- Safety: one unauthenticated handshake plus a graceful close; no credentials, no channels, no queue operations.
-
-**How to Execute:**
-```bash
-nmap -p 5672 --script rabbitmq-amqp-protocol-handshake mq01.corp.example.com
-
-# Tuned request budget
-nmap -p 5672 --script rabbitmq-amqp-protocol-handshake --script-args 'rabbitmq-amqp-protocol-handshake.timeout=8,rabbitmq-amqp-protocol-handshake.maxrequests=48' mq01.corp.example.com
-```
-
-**Sample Output:**
-```
-| rabbitmq-amqp-protocol-handshake:
-|   Risk Level: 🟢 LOW
-|   Status: INFORMATIONAL - AMQP handshake fingerprint collected
-```
-
----
-
-### 12. **rabbitmq-default-credentials** - guest/guest Default Credential Check
+### 5. **rabbitmq-default-credentials** - guest/guest Default Credential Check
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -369,7 +192,7 @@ nmap -p 5672 --script rabbitmq-default-credentials --script-args 'rabbitmq-defau
 
 ---
 
-### 13. **rabbitmq-definitions-export-leak** - Definitions Export (Users/VHosts/Policies)
+### 6. **rabbitmq-definitions-export-leak** - Definitions Export (Users/VHosts/Policies)
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -397,7 +220,7 @@ nmap -p 15672 --script rabbitmq-definitions-export-leak --script-args 'rabbitmq-
 
 ---
 
-### 14. **rabbitmq-management-unauth** - Management API Authentication Posture
+### 7. **rabbitmq-management-unauth** - Management API Authentication Posture
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
@@ -425,7 +248,63 @@ nmap -p 15672 --script rabbitmq-management-unauth --script-args 'rabbitmq-manage
 
 ---
 
-### 15. **rabbitmq-queue-messages-dump** - Queue Inventory & Backlog Analysis
+### 8. **kafka-create-topic-allowed** - Anonymous CreateTopics Sentinel Probe
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- Sends CreateTopics (key 19) for the sentinel: 1 partition, RF 1.
+- Decodes the topic error code (NO_ERROR vs CLUSTER_AUTHORIZATION_FAILED).
+- On success deletes the sentinel and verifies removal via Metadata.
+- Grades the create path.
+- Why it matters: Topic creation is a control-plane write: an open create path lets an attacker shadow real topics, exhaust disk via partition floods and confuse downstream consumers with look-alike names. The probe distinguishes authorization failures from policy failures so defenders know exactly which layer blocked the request.
+- Safety: one create of a uniquely-named 1-partition, RF-1 topic that is deleted immediately and its absence verified.
+
+**How to Execute:**
+```bash
+nmap -p 9092 --script kafka-create-topic-allowed broker01.corp.example.com
+
+# Tuned request budget
+nmap -p 9092 --script kafka-create-topic-allowed --script-args 'kafka-create-topic-allowed.timeout=8,kafka-create-topic-allowed.maxrequests=48' broker01.corp.example.com
+```
+
+**Sample Output:**
+```
+| kafka-create-topic-allowed:
+|   Risk Level: 🟠 HIGH
+|   Status: VULNERABLE - anonymous clients may create topics
+```
+
+---
+
+### 9. **kafka-delete-topic-allowed** - Anonymous DeleteTopics Sentinel Probe
+**Risk Level:** 🟠 HIGH | **Category:** vuln, safe
+
+**What it checks:**
+- Verifies via Metadata that the sentinel topic does not exist.
+- Sends DeleteTopics (key 20) for the sentinel.
+- Decodes the error code to distinguish authorization from policy.
+- Grades the delete path.
+- Why it matters: An authorized delete path means one unauthenticated request can erase production data pipelines: the deletion of a real topic is irreversible and cascades to downstream consumers. UNKNOWN_TOPIC_OR_PARTITION for a nonexistent sentinel is definitive proof that authorization passed and only the name was missing.
+- Safety: nothing that exists is ever deleted - the sentinel is checked absent beforehand and the probe deletes only that name.
+
+**How to Execute:**
+```bash
+nmap -p 9092 --script kafka-delete-topic-allowed broker01.corp.example.com
+
+# Tuned request budget
+nmap -p 9092 --script kafka-delete-topic-allowed --script-args 'kafka-delete-topic-allowed.timeout=8,kafka-delete-topic-allowed.maxrequests=48' broker01.corp.example.com
+```
+
+**Sample Output:**
+```
+| kafka-delete-topic-allowed:
+|   Risk Level: 🟠 HIGH
+|   Status: VULNERABLE - delete path authorized for anonymous clients
+```
+
+---
+
+### 10. **rabbitmq-queue-messages-dump** - Queue Inventory & Backlog Analysis
 **Risk Level:** 🟠 HIGH | **Category:** vuln, safe
 
 **What it checks:**
@@ -453,7 +332,7 @@ nmap -p 15672 --script rabbitmq-queue-messages-dump --script-args 'rabbitmq-queu
 
 ---
 
-### 16. **rabbitmq-tls-auth-enforced** - TLS Enforcement & Auth Posture on 5671
+### 11. **rabbitmq-tls-auth-enforced** - TLS Enforcement & Auth Posture on 5671
 **Risk Level:** 🟠 HIGH | **Category:** defensive, safe
 
 **What it checks:**
@@ -480,3 +359,142 @@ nmap -p 5671 --script rabbitmq-tls-auth-enforced --script-args 'rabbitmq-tls-aut
 ```
 
 ---
+
+### 12. **kafka-plain-auth-over-cleartext** - SASL PLAIN over Cleartext Listener
+**Risk Level:** 🟡 MEDIUM | **Category:** defensive, safe
+
+**What it checks:**
+- Handshakes SaslHandshake on the connected listener.
+- Checks whether PLAIN is in the mechanism list.
+- Classifies the transport (plaintext vs TLS listener) from the port.
+- Grades the credential-exposure combination.
+- Why it matters: PLAIN over PLAINTEXT hands every on-path observer the exact bytes of a working credential pair. Defenders need per-listener visibility: a broker can enforce TLS on 9093 while still exposing a wide-open legacy 9092.
+- Safety: one handshake frame; no authentication is attempted and no credential material is ever transmitted.
+
+**How to Execute:**
+```bash
+nmap -p 9092 --script kafka-plain-auth-over-cleartext broker01.corp.example.com
+
+# Tuned request budget
+nmap -p 9092 --script kafka-plain-auth-over-cleartext --script-args 'kafka-plain-auth-over-cleartext.timeout=8,kafka-plain-auth-over-cleartext.maxrequests=48' broker01.corp.example.com
+```
+
+**Sample Output:**
+```
+| kafka-plain-auth-over-cleartext:
+|   Risk Level: 🟡 MEDIUM
+|   Status: SECURE - no cleartext-credential mechanism detected on this listener
+```
+
+---
+
+### 13. **kafka-sasl-mechanism-audit** - SASL Mechanism Enumeration & Grading
+**Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
+
+**What it checks:**
+- Sends SaslHandshake (key 17) with the PLAIN probe mechanism.
+- Decodes the advertised mechanism list or the error state.
+- Grades mechanisms (SCRAM-SHA-512 ... PLAIN) with a strength class.
+- Reports the posture without ever sending credentials.
+- Why it matters: The mechanism list tells you whether credentials can cross the wire in the clear (PLAIN without TLS) and whether the broker supports modern SCRAM variants. ILLEGAL_SASL_STATE proves the listener has no SASL at all - the root finding for every downstream Kafka attack.
+- Safety: exactly one handshake frame; no SaslAuthenticate, no credential material, no brute force.
+
+**How to Execute:**
+```bash
+nmap -p 9092 --script kafka-sasl-mechanism-audit broker01.corp.example.com
+
+# Tuned request budget
+nmap -p 9092 --script kafka-sasl-mechanism-audit --script-args 'kafka-sasl-mechanism-audit.timeout=8,kafka-sasl-mechanism-audit.maxrequests=48' broker01.corp.example.com
+```
+
+**Sample Output:**
+```
+| kafka-sasl-mechanism-audit:
+|   Risk Level: 🟡 MEDIUM
+|   Status: INFORMATIONAL - SASL is not enabled on this listener
+```
+
+---
+
+### 14. **kafka-broker-fingerprint** - Broker Version Fingerprint (ApiVersions Floor)
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Sends ApiVersions (key 18) and records every API key range.
+- Infers the version floor from first-introduced API keys.
+- Sends wildcard Metadata to enumerate brokers and the controller.
+- Maps the floor to era advisories.
+- Why it matters: Kafka does not expose a version string pre-auth; the ApiVersions table is the only fingerprint, and each API key's first appearance pins the release line. Era advisories (JAAS/JNDI injection patterns, missing hostname verification fixes) turn the fingerprint into an upgrade priority.
+- Safety: two read-only frames.
+
+**How to Execute:**
+```bash
+nmap -p 9092 --script kafka-broker-fingerprint broker01.corp.example.com
+
+# Tuned request budget
+nmap -p 9092 --script kafka-broker-fingerprint --script-args 'kafka-broker-fingerprint.timeout=8,kafka-broker-fingerprint.maxrequests=48' broker01.corp.example.com
+```
+
+**Sample Output:**
+```
+| kafka-broker-fingerprint:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - fingerprint collected; era advisories matched
+```
+
+---
+
+### 15. **kafka-controller-epoch-leak** - Cluster Topology & Controller Disclosure
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Sends wildcard Metadata (key 3) anonymously.
+- Resolves the controller node id to a broker endpoint.
+- Builds the leader distribution across observed partitions.
+- Reports topology with an INFO-grade finding.
+- Why it matters: The controller broker is the brain of the cluster; knowing its id and address focuses targeted disruption (controlled shutdown abuse, metadata flooding). Leader distribution is an operational health signal defenders can compare against rebalance expectations.
+- Safety: a single metadata read; no leadership changes, no reassignments, no produce or consume traffic.
+
+**How to Execute:**
+```bash
+nmap -p 9092 --script kafka-controller-epoch-leak broker01.corp.example.com
+
+# Tuned request budget
+nmap -p 9092 --script kafka-controller-epoch-leak --script-args 'kafka-controller-epoch-leak.timeout=8,kafka-controller-epoch-leak.maxrequests=48' broker01.corp.example.com
+```
+
+**Sample Output:**
+```
+| kafka-controller-epoch-leak:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - cluster topology collected
+```
+
+---
+
+### 16. **rabbitmq-amqp-protocol-handshake** - AMQP 0-9-1 Handshake Fingerprint
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Sends the AMQP protocol header (AMQP\0\0\x09\x01).
+- Decodes connection.start: version, product, mechanisms, locales.
+- Maps the broker version to advisories.
+- Closes politely with connection.close and checks close-ok.
+- Why it matters: connection.start discloses product, version, platform and the SASL mechanism list before any credential is sent - everything needed to pick the right attack or the right upgrade path. Version-to-advisory mapping flags managers still exposed with CVE-carrying release lines (management XSS, frame DoS lineages).
+- Safety: one unauthenticated handshake plus a graceful close; no credentials, no channels, no queue operations.
+
+**How to Execute:**
+```bash
+nmap -p 5672 --script rabbitmq-amqp-protocol-handshake mq01.corp.example.com
+
+# Tuned request budget
+nmap -p 5672 --script rabbitmq-amqp-protocol-handshake --script-args 'rabbitmq-amqp-protocol-handshake.timeout=8,rabbitmq-amqp-protocol-handshake.maxrequests=48' mq01.corp.example.com
+```
+
+**Sample Output:**
+```
+| rabbitmq-amqp-protocol-handshake:
+|   Risk Level: 🟢 LOW
+|   Status: INFORMATIONAL - AMQP handshake fingerprint collected
+```
+

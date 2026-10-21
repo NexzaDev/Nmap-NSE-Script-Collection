@@ -1,6 +1,16 @@
 # 🔍 DNS Security Audits
 
-**16 Nmap NSE scripts** for auditing DNS infrastructure: authoritative servers, resolvers, zone transfers, DNSSEC, DoH/DNSCrypt transports and email-authentication records. Every script builds real DNS wire-format queries (A, AAAA, NS, SOA, MX, TXT, SRV, ANY, DNSKEY, RRSIG, AXFR, IXFR, CAA, PTR, NAPTR, HTTPS) over UDP and TCP, parses the binary response, and reports evidence-based verdicts.
+**16 Nmap NSE scripts** for auditing DNS infrastructure:
+
+**Covers:**
+
+- Authoritative servers
+- Resolvers
+- Zone transfers
+- DNSSEC
+- DoH/DNSCrypt transports and email-authentication records
+
+Every script builds real DNS wire-format queries (A, AAAA, NS, SOA, MX, TXT, SRV, ANY, DNSKEY, RRSIG, AXFR, IXFR, CAA, PTR, NAPTR, HTTPS) over UDP and TCP, parses the binary response, and reports evidence-based verdicts.
 
 **Port:** 53/udp + 53/tcp (443 for DoH / DNSCrypt) | **Protocol:** DNS | **Total lines of Lua:** 27,383
 
@@ -10,22 +20,22 @@
 
 | # | Script | Risk Level | Category | Lines |
 |---|--------|-----------|----------|-------|
-| 1 | [dns-amplification-risk](#1-dns-amplification-risk---dns-amplification-risk) | 🟡 MEDIUM | safe, discovery, vuln | 1600 |
-| 2 | [dns-axfr-source-spoof](#2-dns-axfr-source-spoof---dns-axfr-source-spoof) | 🔴 CRITICAL | vuln, safe | 1841 |
-| 3 | [dns-cache-snooping](#3-dns-cache-snooping---dns-cache-snooping) | 🟡 MEDIUM | safe, discovery, vuln | 1741 |
-| 4 | [dns-cname-takeover-audit](#4-dns-cname-takeover-audit---dns-cname-takeover-audit) | 🟠 HIGH | vuln, discovery, safe | 1849 |
-| 5 | [dns-dnscrypt-support](#5-dns-dnscrypt-support---dns-dnscrypt-support) | 🟢 LOW | discovery, safe | 1551 |
+| 1 | [dns-axfr-source-spoof](#1-dns-axfr-source-spoof---dns-axfr-source-spoof) | 🔴 CRITICAL | vuln, safe | 1841 |
+| 2 | [dns-ns-recursion-abuse](#2-dns-ns-recursion-abuse---dns-ns-recursion-abuse) | 🔴 CRITICAL | vuln, safe | 1658 |
+| 3 | [dns-cname-takeover-audit](#3-dns-cname-takeover-audit---dns-cname-takeover-audit) | 🟠 HIGH | vuln, discovery, safe | 1849 |
+| 4 | [dns-amplification-risk](#4-dns-amplification-risk---dns-amplification-risk) | 🟡 MEDIUM | safe, discovery, vuln | 1600 |
+| 5 | [dns-cache-snooping](#5-dns-cache-snooping---dns-cache-snooping) | 🟡 MEDIUM | safe, discovery, vuln | 1741 |
 | 6 | [dns-dnssec-validation](#6-dns-dnssec-validation---dns-dnssec-validation) | 🟡 MEDIUM | discovery, safe | 1704 |
-| 7 | [dns-doh-endpoint-probe](#7-dns-doh-endpoint-probe---dns-doh-endpoint-probe) | 🟢 LOW | discovery, safe | 1632 |
-| 8 | [dns-ns-recursion-abuse](#8-dns-ns-recursion-abuse---dns-ns-recursion-abuse) | 🔴 CRITICAL | vuln, safe | 1658 |
-| 9 | [dns-recursion-check](#9-dns-recursion-check---dns-recursion-check) | 🟡 MEDIUM | safe, discovery, vuln | 1689 |
-| 10 | [dns-reverse-ptr-leak](#10-dns-reverse-ptr-leak---dns-reverse-ptr-leak) | 🟡 MEDIUM | discovery, safe | 1808 |
-| 11 | [dns-soa-consistency-check](#11-dns-soa-consistency-check---dns-soa-consistency-check) | 🟡 MEDIUM | safe, discovery | 1807 |
-| 12 | [dns-srv-enum](#12-dns-srv-enum---dns-srv-enum) | 🟡 MEDIUM | safe, discovery | 1625 |
-| 13 | [dns-subdomain-enum](#13-dns-subdomain-enum---dns-subdomain-enum) | 🟡 MEDIUM | safe, discovery | 1662 |
-| 14 | [dns-txt-spf-dmarc-audit](#14-dns-txt-spf-dmarc-audit---dns-txt-spf-dmarc-audit) | 🟡 MEDIUM | safe, discovery, vuln | 1737 |
-| 15 | [dns-wildcard-detector](#15-dns-wildcard-detector---dns-wildcard-detector) | 🟡 MEDIUM | safe, discovery | 1605 |
-| 16 | [dns-zone-transfer-check](#16-dns-zone-transfer-check---dns-zone-transfer-check) | 🟡 MEDIUM | safe, discovery, vuln | 1874 |
+| 7 | [dns-recursion-check](#7-dns-recursion-check---dns-recursion-check) | 🟡 MEDIUM | safe, discovery, vuln | 1689 |
+| 8 | [dns-reverse-ptr-leak](#8-dns-reverse-ptr-leak---dns-reverse-ptr-leak) | 🟡 MEDIUM | discovery, safe | 1808 |
+| 9 | [dns-soa-consistency-check](#9-dns-soa-consistency-check---dns-soa-consistency-check) | 🟡 MEDIUM | safe, discovery | 1807 |
+| 10 | [dns-srv-enum](#10-dns-srv-enum---dns-srv-enum) | 🟡 MEDIUM | safe, discovery | 1625 |
+| 11 | [dns-subdomain-enum](#11-dns-subdomain-enum---dns-subdomain-enum) | 🟡 MEDIUM | safe, discovery | 1662 |
+| 12 | [dns-txt-spf-dmarc-audit](#12-dns-txt-spf-dmarc-audit---dns-txt-spf-dmarc-audit) | 🟡 MEDIUM | safe, discovery, vuln | 1737 |
+| 13 | [dns-wildcard-detector](#13-dns-wildcard-detector---dns-wildcard-detector) | 🟡 MEDIUM | safe, discovery | 1605 |
+| 14 | [dns-zone-transfer-check](#14-dns-zone-transfer-check---dns-zone-transfer-check) | 🟡 MEDIUM | safe, discovery, vuln | 1874 |
+| 15 | [dns-dnscrypt-support](#15-dns-dnscrypt-support---dns-dnscrypt-support) | 🟢 LOW | discovery, safe | 1551 |
+| 16 | [dns-doh-endpoint-probe](#16-dns-doh-endpoint-probe---dns-doh-endpoint-probe) | 🟢 LOW | discovery, safe | 1632 |
 
 ---
 
@@ -45,43 +55,7 @@ All 16 scripts share the following `--script-args` (script-specific extras are l
 
 ## 📜 Script Details
 
-### 1. **dns-amplification-risk** - Dns Amplification Risk
-**Description:** Estimates how well the tested DNS server performs as a DNS amplification reflector. In a DNS amplification attack the attacker sends a small DNS query with a spoofed source address (the victim) to an open, well-connected resolver; the resolver's much larger response goes to the victim. The amplification factor is the response size divided by the query size - a factor above ~10 means the target can turn 1 byte of attacker traffic into 10 bytes of flood traffic.
-
-**Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
-
-**What it checks:**
-- ANY-query amplification factor (the classic reflector) with response-size comparison
-- TXT / DNSKEY / SRV / NAPTR / HTTPS / CAA query-to-response size ratios
-- AXFR-over-UDP truncation behaviour (response size vs the tiny request)
-- Wildcard A answering (any-name flood source)
-- Recursion enablement (RD=1 answering for foreign names)
-
-**How to Execute:**
-```bash
-# Basic scan
-nmap -p 53 --script dns-amplification-risk example.com
-
-# Bigger budget and custom zone
-nmap -p 53 --script dns-amplification-risk --script-args maxrequests=60,domain=corp.example.com example.com
-```
-
-**Sample Output:**
-```
-| dns-amplification-risk:
-|   Status: VULNERABLE - strong DNS amplification reflector (factor 17.8x).
-|   Risk Level: 🟡 MEDIUM
-|   ANY response: answered (641 bytes)
-|   Findings:
-|     [HIGH] the server returns a large ANY response for target.example.com
-|            (641 bytes, amplification factor 17.8x): it can be used to flood
-|            victims - the attacker needs only the small query
-|            (amplification-any:target.example.com) [evidence: 641 bytes ANY]
-```
-
----
-
-### 2. **dns-axfr-source-spoof** - Dns Axfr Source Spoof
+### 1. **dns-axfr-source-spoof** - Dns Axfr Source Spoof
 **Description:** Evaluates how the target guards its zone transfers against an UNAUTHORIZED source - the classic DNS access-control failure that hands the entire zone (every host, every internal IP, every TXT payload, every service record) to anyone who asks, or - when the transfer is at least restricted - how easy it would be to impersonate an authorized secondary. This is a defensive audit: the script never forges source addresses, never sends traffic at volume, and never attacks the server.
 
 **Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
@@ -119,42 +93,44 @@ nmap -p 53 --script dns-axfr-source-spoof --script-args ixfr_check=false,udp_che
 
 ---
 
-### 3. **dns-cache-snooping** - Dns Cache Snooping
-**Description:** Tests whether the target DNS resolver leaks its cache contents to any client - a cache snooping information disclosure. The resolver's cache remembers the names other clients looked up; if the resolver answers a *non-recursive* (RD=0) query for a name it is not authoritative for, the only place a positive answer can come from is its own cache. The probe succeeds exactly when someone else recently asked the resolver for that same name.
+### 2. **dns-ns-recursion-abuse** - Dns Ns Recursion Abuse
+**Description:** Audits how the resolver serves RECURSION to untrusted clients - the control that decides whether this server is a private, access-managed recursor or an open resolver that will chase any name for any client on the internet. An open resolver is a critical exposure for two reasons: (1) it can be abused as a DNS reflection/amplification source against third parties, and (2) it commonly resolves INTERNAL names (split-horizon leak), publishing the organisation's internal infrastructure to the outside world.
 
-**Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
+**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
 
 **What it checks:**
-- RD=0 (non-recursive) queries for popular third-party domains answered from cache
-- Cache freshness tracking via TTL decrease across repeated apex queries
-- Positive-vs-NXDOMAIN split that separates cache hits from honest negatives
-- Which popular domains were recently resolved through this resolver
+- RD=1 recursion for arbitrary third-party domains (open resolver proof)
+- RD=0 non-recursive answering (stronger misconfiguration signal)
+- Internal-name probing: common internal suffixes (.internal, .local, .lan, .corp) resolved externally
+- Sizing: ANY-response size as an amplification surface
+- Combined verdict: open resolver AND internal leakage
 
 **How to Execute:**
 ```bash
 # Basic scan
-nmap -p 53 --script dns-cache-snooping example.com
+nmap -p 53 --script dns-ns-recursion-abuse example.com
 
-# Custom probe list and budget
-nmap -p 53 --script dns-cache-snooping --script-args "probes=google.com,cloudflare.com,example.org",maxrequests=80 example.com
+# Wider internal-suffix list and budget
+nmap -p 53 --script dns-ns-recursion-abuse --script-args internal_check=true,sizing_check=true,maxrequests=64 example.com
 ```
 
 **Sample Output:**
 ```
-| dns-cache-snooping:
-|   Status: VULNERABLE - cache snooping confirmed (9 of 24 probe domains served from the resolver cache).
-|   Risk Level: 🟡 MEDIUM
-|   Apex control (round 3):
-|     1:       target.example.com TTL 300 -> 1 (decreasing between queries)
-|   Cached hits (snooping disclosures):
-|     1: google.com (TTL 300, 192.0.2.44)
-|     2: amazon.com (TTL 300, 192.0.2.44)
-|     3: microsoft.com (TTL 300, 192.0.2.44)
+| dns-ns-recursion-abuse:
+|   Status: VULNERABLE - open resolver AND 1 internal name(s) resolvable externally.
+|   Risk Level: 🔴 CRITICAL
+|   Fetch log:
+|     1: example.org (RD=1) -> ANSWERED (192.0.2.44) - recursion performed for an external client
+|     10: internal.lan (RD=1) -> NXDOMAIN (not resolvable from outside)
+|     14: ANY target.example.com (RD=1, plain) -> NOERROR (641 bytes)
+|   Cache served in both modes:
+|     1: example.org
+|     2: cloudflare.com
 ```
 
 ---
 
-### 4. **dns-cname-takeover-audit** - Dns Cname Takeover Audit
+### 3. **dns-cname-takeover-audit** - Dns Cname Takeover Audit
 **Description:** Audits the DNS zone for CNAME records that point at third-party hosting/collaboration/SaaS providers (Shopify, GitLab Pages, GitHub Pages, Heroku, S3, Netlify, Vercel, Webflow, Firebase, CloudFront, Medium, Ghost, Azure App Service and more). When the organisation releases or lets lapse the account behind one of those CNAMEs, the provider's default behaviour is to serve a "this page is available" claim page - and in several well-documented cases the claim flow lets a new account holder take over the subdomain.
 
 **Risk Level:** 🟠 HIGH | **Category:** vuln, discovery, safe
@@ -191,39 +167,73 @@ nmap -p 53 --script dns-cname-takeover-audit --script-args axfr=true,maxcandidat
 
 ---
 
-### 5. **dns-dnscrypt-support** - Dns Dnscrypt Support
-**Description:** Detects whether the target offers DNSCrypt v2 (authenticated and encrypted DNS) on the probed port, over both UDP and TCP. DNSCrypt lets clients on untrusted networks (public Wi-Fi, hostile ISPs, corporate NATs that inspect DNS) query DNS with the server's identity authenticated and the payload encrypted - without the certificate management burden of TLS/DoT or the path dependency of DoH. The script performs the real certificate exchange of the DNSCrypt v2 protocol.
+### 4. **dns-amplification-risk** - Dns Amplification Risk
+**Description:** Estimates how well the tested DNS server performs as a DNS amplification reflector. In a DNS amplification attack the attacker sends a small DNS query with a spoofed source address (the victim) to an open, well-connected resolver; the resolver's much larger response goes to the victim. The amplification factor is the response size divided by the query size - a factor above ~10 means the target can turn 1 byte of attacker traffic into 10 bytes of flood traffic.
 
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+**Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
 
 **What it checks:**
-- DNSCrypt v2 certificate request/response over UDP (0x19 0x13 client magic)
-- The same exchange over TCP (protocol-accurate framing)
-- Certificate fields: version, type, length, key fingerprint
-- Fingerprint comparison between transports and between audit runs
-- Malformed-payload handling (server should drop, not crash)
+- ANY-query amplification factor (the classic reflector) with response-size comparison
+- TXT / DNSKEY / SRV / NAPTR / HTTPS / CAA query-to-response size ratios
+- AXFR-over-UDP truncation behaviour (response size vs the tiny request)
+- Wildcard A answering (any-name flood source)
+- Recursion enablement (RD=1 answering for foreign names)
 
 **How to Execute:**
 ```bash
-# Basic scan (probes port 443 udp+tcp)
-nmap -p 443 --script dns-dnscrypt-support example.com
+# Basic scan
+nmap -p 53 --script dns-amplification-risk example.com
 
-# Skip the malformed probe
-nmap -p 443 --script dns-dnscrypt-support --script-args malformed_probe=false example.com
+# Bigger budget and custom zone
+nmap -p 53 --script dns-amplification-risk --script-args maxrequests=60,domain=corp.example.com example.com
 ```
 
 **Sample Output:**
 ```
-| dns-dnscrypt-support:
-|   Status: AUDITED - DNSCrypt v2 supported on port 443 over udp and tcp.
-|   Risk Level: 🟢 LOW
-|   Certificate exchange:
-|     1:       UDP      certificate OK: version 0, type 0, 33 bytes, key fingerprint 7b60e5ed
-|     2:       TCP      certificate OK: version 0, type 0, 33 bytes, key fingerprint 7b60e5ed
-|   Fetch log:
-|     1: UDP/443 certificate request (36 bytes) -> supported
-|     2: TCP/443 certificate request (36 bytes) -> supported
-|     3: UDP malformed payload probe -> no response (dropped, expected)
+| dns-amplification-risk:
+|   Status: VULNERABLE - strong DNS amplification reflector (factor 17.8x).
+|   Risk Level: 🟡 MEDIUM
+|   ANY response: answered (641 bytes)
+|   Findings:
+|     [HIGH] the server returns a large ANY response for target.example.com
+|            (641 bytes, amplification factor 17.8x): it can be used to flood
+|            victims - the attacker needs only the small query
+|            (amplification-any:target.example.com) [evidence: 641 bytes ANY]
+```
+
+---
+
+### 5. **dns-cache-snooping** - Dns Cache Snooping
+**Description:** Tests whether the target DNS resolver leaks its cache contents to any client - a cache snooping information disclosure. The resolver's cache remembers the names other clients looked up; if the resolver answers a *non-recursive* (RD=0) query for a name it is not authoritative for, the only place a positive answer can come from is its own cache. The probe succeeds exactly when someone else recently asked the resolver for that same name.
+
+**Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
+
+**What it checks:**
+- RD=0 (non-recursive) queries for popular third-party domains answered from cache
+- Cache freshness tracking via TTL decrease across repeated apex queries
+- Positive-vs-NXDOMAIN split that separates cache hits from honest negatives
+- Which popular domains were recently resolved through this resolver
+
+**How to Execute:**
+```bash
+# Basic scan
+nmap -p 53 --script dns-cache-snooping example.com
+
+# Custom probe list and budget
+nmap -p 53 --script dns-cache-snooping --script-args "probes=google.com,cloudflare.com,example.org",maxrequests=80 example.com
+```
+
+**Sample Output:**
+```
+| dns-cache-snooping:
+|   Status: VULNERABLE - cache snooping confirmed (9 of 24 probe domains served from the resolver cache).
+|   Risk Level: 🟡 MEDIUM
+|   Apex control (round 3):
+|     1:       target.example.com TTL 300 -> 1 (decreasing between queries)
+|   Cached hits (snooping disclosures):
+|     1: google.com (TTL 300, 192.0.2.44)
+|     2: amazon.com (TTL 300, 192.0.2.44)
+|     3: microsoft.com (TTL 300, 192.0.2.44)
 ```
 
 ---
@@ -266,82 +276,7 @@ nmap -p 53 --script dns-dnssec-validation --script-args domain=corp.example.com 
 
 ---
 
-### 7. **dns-doh-endpoint-probe** - Dns Doh Endpoint Probe
-**Description:** Probes whether the target serves a DNS-over-HTTPS (DoH) endpoint at /dns-query, the path mandated by RFC 8484, and validates that the endpoint actually speaks the DoH wire format - not just that the URL exists. DoH lets clients resolve DNS inside TLS on port 443, which defeats DNS interception on untrusted networks. The audit tells you whether the endpoint is real, which request modes it supports, and whether its transport and CORS configuration are sound.
-
-**Risk Level:** 🟢 LOW | **Category:** discovery, safe
-
-**What it checks:**
-- Encoded mode (RFC 8484): a real DNS A query, base64url-encoded, GET /dns-query?dns=<message> with Accept: application/dns-message; response ID must match
-- Simple mode: GET /dns-query?name=<host>&type=A
-- 406 negative control (Accept: text/html must be rejected)
-- Content-Type application/dns-message validation
-- TLS presence and Access-Control-Allow-Origin (browser DoH clients)
-
-**How to Execute:**
-```bash
-# Basic scan
-nmap -p 443 --script dns-doh-endpoint-probe example.com
-
-# Skip the simple-mode and negative probes
-nmap -p 443 --script dns-doh-endpoint-probe --script-args simple_check=false,negative_check=false example.com
-```
-
-**Sample Output:**
-```
-| dns-doh-endpoint-probe:
-|   Status: IDENTIFIED - DNS-over-HTTPS (DoH) endpoint active on /dns-query
-|          (RFC 8484: encoded and simple modes).
-|   Risk Level: 🟢 LOW
-|   Request mode support:
-|     1:       encoded (dns=base64url):  ok / rcode NOERROR
-|     2:       simple  (name=, type=):   ok / rcode NOERROR
-|     3:       negative (Accept: text/html): correct-406
-|   Probed endpoint: https://target.example.com:443/dns-query
-|   Findings:
-|     1: no weaknesses detected by this audit
-```
-
----
-
-### 8. **dns-ns-recursion-abuse** - Dns Ns Recursion Abuse
-**Description:** Audits how the resolver serves RECURSION to untrusted clients - the control that decides whether this server is a private, access-managed recursor or an open resolver that will chase any name for any client on the internet. An open resolver is a critical exposure for two reasons: (1) it can be abused as a DNS reflection/amplification source against third parties, and (2) it commonly resolves INTERNAL names (split-horizon leak), publishing the organisation's internal infrastructure to the outside world.
-
-**Risk Level:** 🔴 CRITICAL | **Category:** vuln, safe
-
-**What it checks:**
-- RD=1 recursion for arbitrary third-party domains (open resolver proof)
-- RD=0 non-recursive answering (stronger misconfiguration signal)
-- Internal-name probing: common internal suffixes (.internal, .local, .lan, .corp) resolved externally
-- Sizing: ANY-response size as an amplification surface
-- Combined verdict: open resolver AND internal leakage
-
-**How to Execute:**
-```bash
-# Basic scan
-nmap -p 53 --script dns-ns-recursion-abuse example.com
-
-# Wider internal-suffix list and budget
-nmap -p 53 --script dns-ns-recursion-abuse --script-args internal_check=true,sizing_check=true,maxrequests=64 example.com
-```
-
-**Sample Output:**
-```
-| dns-ns-recursion-abuse:
-|   Status: VULNERABLE - open resolver AND 1 internal name(s) resolvable externally.
-|   Risk Level: 🔴 CRITICAL
-|   Fetch log:
-|     1: example.org (RD=1) -> ANSWERED (192.0.2.44) - recursion performed for an external client
-|     10: internal.lan (RD=1) -> NXDOMAIN (not resolvable from outside)
-|     14: ANY target.example.com (RD=1, plain) -> NOERROR (641 bytes)
-|   Cache served in both modes:
-|     1: example.org
-|     2: cloudflare.com
-```
-
----
-
-### 9. **dns-recursion-check** - Dns Recursion Check
+### 7. **dns-recursion-check** - Dns Recursion Check
 **Description:** Determines whether the tested DNS resolver performs recursive resolution for arbitrary third-party domains on behalf of any client - the classic "open resolver" exposure. An open resolver lets an attacker use the organisation's (typically well-connected, whitelisted, low-latency) resolver as a free recursive cache, hides the attacker's real source address from the authoritative servers, and can be used to poison or probe the resolver's cache. It is also the prerequisite for DNS cache-poisoning and amplification abuse.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
@@ -377,7 +312,7 @@ nmap -p 53 --script dns-recursion-check --script-args tcp=true,rd0=true,maxprobe
 
 ---
 
-### 10. **dns-reverse-ptr-leak** - Dns Reverse Ptr Leak
+### 8. **dns-reverse-ptr-leak** - Dns Reverse Ptr Leak
 **Description:** Maps reverse (PTR) records for the addresses the audited zone is associated with and analyses what the reverse zone discloses about the organisation's internal infrastructure. Reverse DNS is a classic reconnaissance channel: organisations often maintain their reverse zones far less carefully than their forward zones, leaving stale records, test hostnames, and - most tellingly - PTR records that point at names in INTERNAL domains (for example workstation-01.internal.lan for a public mail IP).
 
 **Risk Level:** 🟡 MEDIUM | **Category:** discovery, safe
@@ -415,7 +350,7 @@ nmap -p 53 --script dns-reverse-ptr-leak --script-args "addresses=203.0.113.10,2
 
 ---
 
-### 11. **dns-soa-consistency-check** - Dns Soa Consistency Check
+### 9. **dns-soa-consistency-check** - Dns Soa Consistency Check
 **Description:** Audits the zone's SOA record for parameter sanity and cross-checks the zone's own data for internal consistency: does the SOA's primary nameserver (MNAME) actually appear in the zone's NS set? Do the NS hosts resolve? Is the serial date-based and still current? And when a zone transfer is available, does the transfer start and end with the same SOA (an atomic snapshot)?
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery
@@ -454,7 +389,7 @@ nmap -p 53 --script dns-soa-consistency-check --script-args axfr_check=true,chec
 
 ---
 
-### 12. **dns-srv-enum** - Dns Srv Enum
+### 10. **dns-srv-enum** - Dns Srv Enum
 **Description:** Enumerates SRV (Service Location, RFC 2782) records published under a domain. SRV records advertise the hostnames and ports of the organisation's services - SIP/VoIP, XMPP, Lync/Teams federation, autodiscover, LDAP/Active Directory, MySQL/PostgreSQL/Redis/Kafka, STUN/TURN, gRPC, H.323 and dozens more. They are frequently left in production even after the service itself moves, and because SRV targets are real hostnames (often internal ones) the record set is a compact map of the internal service topology.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery
@@ -490,7 +425,7 @@ nmap -p 53 --script dns-srv-enum --script-args resolve=true,maxrequests=100 exam
 
 ---
 
-### 13. **dns-subdomain-enum** - Dns Subdomain Enum
+### 11. **dns-subdomain-enum** - Dns Subdomain Enum
 **Description:** Enumerates subdomains of the audited zone by probing a curated wordlist of common service labels (web, mail, dev/staging, monitoring, git, backup, ...) with single A-record queries, and - crucially - separates REAL records from wildcard noise before reporting anything. Most public zones today answer any unregistered name with a wildcard A record, so a naive brute-force that reports "X resolved" is useless on such zones.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery
@@ -527,7 +462,7 @@ nmap -p 53 --script dns-subdomain-enum --script-args "labels=www,mail,dev,api,vp
 
 ---
 
-### 14. **dns-txt-spf-dmarc-audit** - Dns Txt Spf Dmarc Audit
+### 12. **dns-txt-spf-dmarc-audit** - Dns Txt Spf Dmarc Audit
 **Description:** Audits the email-authentication TXT records for a domain - SPF, DKIM and DMARC - and reports on how well the domain is protected against spoofing and impersonation. Email authentication is a primary defence against phishing and business-email-compromise: SPF tells receivers which IPs may send for the domain, DKIM adds a cryptographic signature that receivers can verify, and DMARC tells receivers what to do with mail that fails the other two and where to send aggregate reports.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
@@ -564,7 +499,7 @@ nmap -p 53 --script dns-txt-spf-dmarc-audit --script-args dkim=false example.com
 
 ---
 
-### 15. **dns-wildcard-detector** - Dns Wildcard Detector
+### 13. **dns-wildcard-detector** - Dns Wildcard Detector
 **Description:** Detects whether a zone answers wildcard DNS records - that is, whether unregistered subdomain names resolve to the same address/records as if they existed. Wildcard DNS records are commonly used as a catch-all for unknown hosts, and while not a vulnerability by themselves they have real security consequences: subdomain enumeration via DNS becomes meaningless, subdomain-takeover alerts are noisy, and monitoring/allow-listing systems are weakened.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery
@@ -600,7 +535,7 @@ nmap -p 53 --script dns-wildcard-detector --script-args samples=10,maxrequests=1
 
 ---
 
-### 16. **dns-zone-transfer-check** - Dns Zone Transfer Check
+### 14. **dns-zone-transfer-check** - Dns Zone Transfer Check
 **Description:** Checks whether the DNS zone for the target domain can be transferred (AXFR / IXFR) by an unauthenticated remote client, and how much of the zone it exposes. A zone transfer grants a complete, authoritative dump of every record in the zone: all subdomains, internal hostnames, the mailing infrastructure, service records (SRV) with internal targets, TXT records that frequently carry deployment notes, credentials and token-shaped strings, and the SOA serial that reveals how the zone is versioned.
 
 **Risk Level:** 🟡 MEDIUM | **Category:** safe, discovery, vuln
@@ -636,6 +571,79 @@ nmap -p 53 --script dns-zone-transfer-check --script-args maxns=16,maxrequests=4
 ```
 
 ---
+
+### 15. **dns-dnscrypt-support** - Dns Dnscrypt Support
+**Description:** Detects whether the target offers DNSCrypt v2 (authenticated and encrypted DNS) on the probed port, over both UDP and TCP. DNSCrypt lets clients on untrusted networks (public Wi-Fi, hostile ISPs, corporate NATs that inspect DNS) query DNS with the server's identity authenticated and the payload encrypted - without the certificate management burden of TLS/DoT or the path dependency of DoH. The script performs the real certificate exchange of the DNSCrypt v2 protocol.
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- DNSCrypt v2 certificate request/response over UDP (0x19 0x13 client magic)
+- The same exchange over TCP (protocol-accurate framing)
+- Certificate fields: version, type, length, key fingerprint
+- Fingerprint comparison between transports and between audit runs
+- Malformed-payload handling (server should drop, not crash)
+
+**How to Execute:**
+```bash
+# Basic scan (probes port 443 udp+tcp)
+nmap -p 443 --script dns-dnscrypt-support example.com
+
+# Skip the malformed probe
+nmap -p 443 --script dns-dnscrypt-support --script-args malformed_probe=false example.com
+```
+
+**Sample Output:**
+```
+| dns-dnscrypt-support:
+|   Status: AUDITED - DNSCrypt v2 supported on port 443 over udp and tcp.
+|   Risk Level: 🟢 LOW
+|   Certificate exchange:
+|     1:       UDP      certificate OK: version 0, type 0, 33 bytes, key fingerprint 7b60e5ed
+|     2:       TCP      certificate OK: version 0, type 0, 33 bytes, key fingerprint 7b60e5ed
+|   Fetch log:
+|     1: UDP/443 certificate request (36 bytes) -> supported
+|     2: TCP/443 certificate request (36 bytes) -> supported
+|     3: UDP malformed payload probe -> no response (dropped, expected)
+```
+
+---
+
+### 16. **dns-doh-endpoint-probe** - Dns Doh Endpoint Probe
+**Description:** Probes whether the target serves a DNS-over-HTTPS (DoH) endpoint at /dns-query, the path mandated by RFC 8484, and validates that the endpoint actually speaks the DoH wire format - not just that the URL exists. DoH lets clients resolve DNS inside TLS on port 443, which defeats DNS interception on untrusted networks. The audit tells you whether the endpoint is real, which request modes it supports, and whether its transport and CORS configuration are sound.
+
+**Risk Level:** 🟢 LOW | **Category:** discovery, safe
+
+**What it checks:**
+- Encoded mode (RFC 8484): a real DNS A query, base64url-encoded, GET /dns-query?dns=<message> with Accept: application/dns-message; response ID must match
+- Simple mode: GET /dns-query?name=<host>&type=A
+- 406 negative control (Accept: text/html must be rejected)
+- Content-Type application/dns-message validation
+- TLS presence and Access-Control-Allow-Origin (browser DoH clients)
+
+**How to Execute:**
+```bash
+# Basic scan
+nmap -p 443 --script dns-doh-endpoint-probe example.com
+
+# Skip the simple-mode and negative probes
+nmap -p 443 --script dns-doh-endpoint-probe --script-args simple_check=false,negative_check=false example.com
+```
+
+**Sample Output:**
+```
+| dns-doh-endpoint-probe:
+|   Status: IDENTIFIED - DNS-over-HTTPS (DoH) endpoint active on /dns-query
+|          (RFC 8484: encoded and simple modes).
+|   Risk Level: 🟢 LOW
+|   Request mode support:
+|     1:       encoded (dns=base64url):  ok / rcode NOERROR
+|     2:       simple  (name=, type=):   ok / rcode NOERROR
+|     3:       negative (Accept: text/html): correct-406
+|   Probed endpoint: https://target.example.com:443/dns-query
+|   Findings:
+|     1: no weaknesses detected by this audit
+```
 
 ## 🛡️ Safety Notes
 
